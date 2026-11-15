@@ -1,8 +1,9 @@
 
 import React, { useEffect, useMemo, useState } from "react";
+import { signInWithEmailAndPassword, signOut } from "firebase/auth";
+import { auth } from "./firebase";
 
-const ADMIN_ID = "patel";
-const ADMIN_PASSWORD = "PDS@2006";
+const ADMIN_EMAIL = "mohanpatel7791@gmail.com";
 
 const styles = `
 *{box-sizing:border-box}
@@ -45,13 +46,18 @@ th{color:#e6bd62}
 
 function readOrders() {
   const keys = ["pds_orders", "orders", "orderData", "customerOrders"];
+
   for (const key of keys) {
     try {
       const data = JSON.parse(localStorage.getItem(key) || "null");
+
       if (Array.isArray(data)) return { key, data };
-      if (data && Array.isArray(data.orders)) return { key, data: data.orders };
+      if (data && Array.isArray(data.orders)) {
+        return { key, data: data.orders };
+      }
     } catch {}
   }
+
   return { key: "pds_orders", data: [] };
 }
 
@@ -65,13 +71,18 @@ export default function Admin({ onClose }) {
   const [storageKey, setStorageKey] = useState("pds_orders");
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("All");
+
   const [services, setServices] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem("pds_services") || "[]");
-    } catch { return []; }
+    } catch {
+      return [];
+    }
   });
+
   const [newService, setNewService] = useState("");
   const [newPrice, setNewPrice] = useState("");
+  const [loading, setLoading] = useState(false);
 
   const refreshOrders = () => {
     const result = readOrders();
@@ -88,14 +99,68 @@ export default function Admin({ onClose }) {
     localStorage.setItem(storageKey, JSON.stringify(updated));
   };
 
-  const login = (e) => {
+  // Firebase Admin Login
+  const login = async (e) => {
     e.preventDefault();
-    if (user === ADMIN_ID && pass === ADMIN_PASSWORD) {
+    setError("");
+
+    if (user.trim().toLowerCase() !== ADMIN_EMAIL) {
+      setError("यह Admin Email मान्य नहीं है।");
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      const result = await signInWithEmailAndPassword(
+        auth,
+        user.trim().toLowerCase(),
+        pass
+      );
+
+      if (result.user.email?.toLowerCase() !== ADMIN_EMAIL) {
+        await signOut(auth);
+        setError("आपको Admin Panel की अनुमति नहीं है।");
+        return;
+      }
+
       setLoggedIn(true);
       setError("");
       setPass("");
-    } else {
-      setError("गलत Admin ID या Password");
+      refreshOrders();
+    } catch (err) {
+      console.error("Admin Login Error:", err);
+
+      if (
+        err.code === "auth/invalid-credential" ||
+        err.code === "auth/user-not-found" ||
+        err.code === "auth/wrong-password"
+      ) {
+        setError("Admin Email या Password गलत है।");
+      } else if (err.code === "auth/too-many-requests") {
+        setError("बहुत बार कोशिश हुई है। कुछ देर बाद प्रयास करें।");
+      } else if (err.code === "auth/network-request-failed") {
+        setError("Internet connection जाँचें।");
+      } else {
+        setError("Login नहीं हुआ। कृपया दोबारा कोशिश करें।");
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Firebase Logout
+  const logout = async () => {
+    try {
+      await signOut(auth);
+      setLoggedIn(false);
+      setUser("");
+      setPass("");
+      setError("");
+      setTab("Dashboard");
+    } catch (err) {
+      console.error("Logout Error:", err);
+      setError("Logout नहीं हो पाया। दोबारा कोशिश करें।");
     }
   };
 
@@ -110,31 +175,51 @@ export default function Admin({ onClose }) {
       const mobile = String(o.mobile || o.phone || o.mobileNumber || "");
       const name = String(o.name || o.customerName || "");
       const id = String(o.orderId || o.id || "");
-      const matchesSearch = [mobile, name, id].join(" ").toLowerCase()
+
+      const matchesSearch = [mobile, name, id]
+        .join(" ")
+        .toLowerCase()
         .includes(search.toLowerCase());
-      const payment = String(o.paymentStatus || o.payment_status || "Unpaid");
-      const matchesFilter = filter === "All" ||
+
+      const payment = String(
+        o.paymentStatus || o.payment_status || "Unpaid"
+      );
+
+      const matchesFilter =
+        filter === "All" ||
         (filter === "Paid" && payment.toLowerCase() === "paid") ||
         (filter === "Unpaid" && payment.toLowerCase() !== "paid");
+
       return matchesSearch && matchesFilter;
     });
   }, [orders, search, filter]);
 
   const totalRevenue = orders.reduce((sum, o) => {
-    const paid = String(o.paymentStatus || o.payment_status || "").toLowerCase() === "paid";
+    const paid =
+      String(o.paymentStatus || o.payment_status || "").toLowerCase() === "paid";
+
     return sum + (paid ? Number(o.price || o.amount || 0) : 0);
   }, 0);
 
   const pendingAmount = orders.reduce((sum, o) => {
-    const paid = String(o.paymentStatus || o.payment_status || "").toLowerCase() === "paid";
+    const paid =
+      String(o.paymentStatus || o.payment_status || "").toLowerCase() === "paid";
+
     return sum + (!paid ? Number(o.price || o.amount || 0) : 0);
   }, 0);
 
   const addService = () => {
     if (!newService.trim() || newPrice === "") return;
-    const updated = [...services, {
-      id: Date.now(), name: newService.trim(), price: Number(newPrice)
-    }];
+
+    const updated = [
+      ...services,
+      {
+        id: Date.now(),
+        name: newService.trim(),
+        price: Number(newPrice)
+      }
+    ];
+
     setServices(updated);
     localStorage.setItem("pds_services", JSON.stringify(updated));
     setNewService("");
@@ -142,15 +227,18 @@ export default function Admin({ onClose }) {
   };
 
   const deleteService = (id) => {
-    const updated = services.filter(s => s.id !== id);
+    const updated = services.filter((s) => s.id !== id);
     setServices(updated);
     localStorage.setItem("pds_services", JSON.stringify(updated));
   };
 
   const value = (o, ...keys) => {
     for (const key of keys) {
-      if (o[key] !== undefined && o[key] !== null && o[key] !== "") return o[key];
+      if (o[key] !== undefined && o[key] !== null && o[key] !== "") {
+        return o[key];
+      }
     }
+
     return "—";
   };
 
@@ -162,69 +250,165 @@ export default function Admin({ onClose }) {
         <div className="login-wrap">
           <form className="login" onSubmit={login}>
             <div className="logo">PD</div>
+
             <h2>ADMIN LOGIN</h2>
-            <p className="muted" style={{textAlign:"center"}}>
+
+            <p className="muted" style={{ textAlign: "center" }}>
               PATEL DIGITAL STUDIO
             </p>
-            <label>Admin ID</label>
-            <input value={user} onChange={e=>setUser(e.target.value)}
-              placeholder="Enter Admin ID" required />
+
+            <label>Admin Email</label>
+            <input
+              type="email"
+              value={user}
+              onChange={(e) => setUser(e.target.value)}
+              placeholder="Enter Admin Email"
+              autoComplete="username"
+              required
+            />
+
             <label>Password</label>
-            <input type="password" value={pass}
-              onChange={e=>setPass(e.target.value)}
-              placeholder="Enter Password" required />
-            {error && <p style={{color:"#ff7777"}}>{error}</p>}
-            <button className="btn" style={{width:"100%"}}>Secure Login</button>
-            {onClose && <button type="button" className="btn dark"
-              style={{width:"100%",marginTop:10}} onClick={onClose}>Back to Website</button>}
+            <input
+              type="password"
+              value={pass}
+              onChange={(e) => setPass(e.target.value)}
+              placeholder="Enter Firebase Password"
+              autoComplete="current-password"
+              required
+            />
+
+            {error && <p style={{ color: "#ff7777" }}>{error}</p>}
+
+            <button
+              type="submit"
+              className="btn"
+              style={{ width: "100%" }}
+              disabled={loading}
+            >
+              {loading ? "PLEASE WAIT..." : "Secure Login"}
+            </button>
+
+            {onClose && (
+              <button
+                type="button"
+                className="btn dark"
+                style={{ width: "100%", marginTop: 10 }}
+                onClick={onClose}
+              >
+                Back to Website
+              </button>
+            )}
           </form>
         </div>
       ) : (
         <>
           <header className="top">
             <div>
-              <div className="logo" style={{textAlign:"left",fontSize:27}}>PD</div>
+              <div
+                className="logo"
+                style={{ textAlign: "left", fontSize: 27 }}
+              >
+                PD
+              </div>
+
               <h2>Patel Digital Studio</h2>
-              <small className="muted">Premium Admin Control Panel</small>
+
+              <small className="muted">
+                Premium Admin Control Panel
+              </small>
             </div>
+
             <div className="actions">
-              <button className="btn dark" onClick={refreshOrders}>Refresh</button>
-              <button className="btn red" onClick={()=>setLoggedIn(false)}>Logout</button>
+              <button className="btn dark" onClick={refreshOrders}>
+                Refresh
+              </button>
+
+              <button className="btn red" onClick={logout}>
+                Logout
+              </button>
             </div>
           </header>
 
           <nav className="nav">
-            {["Dashboard","Orders","Payments","Services"].map(item=>(
-              <button key={item} className={tab===item?"active":""}
-                onClick={()=>setTab(item)}>{item}</button>
+            {["Dashboard", "Orders", "Payments", "Services"].map((item) => (
+              <button
+                key={item}
+                className={tab === item ? "active" : ""}
+                onClick={() => setTab(item)}
+              >
+                {item}
+              </button>
             ))}
           </nav>
 
           {tab === "Dashboard" && (
             <>
               <h2 className="gold">Dashboard Overview</h2>
+
               <div className="cards">
-                <div className="card"><small>Total Orders</small><h2>{orders.length}</h2></div>
-                <div className="card"><small>Paid Collection</small><h2>₹{totalRevenue}</h2></div>
-                <div className="card"><small>Pending Amount</small><h2>₹{pendingAmount}</h2></div>
-                <div className="card"><small>Total Services</small><h2>{services.length}</h2></div>
+                <div className="card">
+                  <small>Total Orders</small>
+                  <h2>{orders.length}</h2>
+                </div>
+
+                <div className="card">
+                  <small>Paid Collection</small>
+                  <h2>₹{totalRevenue}</h2>
+                </div>
+
+                <div className="card">
+                  <small>Pending Amount</small>
+                  <h2>₹{pendingAmount}</h2>
+                </div>
+
+                <div className="card">
+                  <small>Total Services</small>
+                  <h2>{services.length}</h2>
+                </div>
               </div>
+
               <div className="panel">
                 <h3>Recent Orders</h3>
-                {orders.length === 0 ? <div className="empty">अभी कोई सेव किया हुआ Order नहीं मिला।</div> :
-                  <div className="table-wrap"><table>
-                    <thead><tr><th>Order ID</th><th>Customer</th><th>Mobile</th><th>Service</th><th>Amount</th><th>Payment</th></tr></thead>
-                    <tbody>{orders.slice(-5).reverse().map((o,i)=>(
-                      <tr key={i}>
-                        <td>{value(o,"orderId","id")}</td>
-                        <td>{value(o,"name","customerName")}</td>
-                        <td>{value(o,"mobile","phone","mobileNumber")}</td>
-                        <td>{value(o,"service","serviceName","selectedService")}</td>
-                        <td>₹{value(o,"price","amount")}</td>
-                        <td><span className="status">{value(o,"paymentStatus","payment_status")}</span></td>
-                      </tr>
-                    ))}</tbody>
-                  </table></div>}
+
+                {orders.length === 0 ? (
+                  <div className="empty">
+                    अभी कोई सेव किया हुआ Order नहीं मिला।
+                  </div>
+                ) : (
+                  <div className="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Order ID</th>
+                          <th>Customer</th>
+                          <th>Mobile</th>
+                          <th>Service</th>
+                          <th>Amount</th>
+                          <th>Payment</th>
+                        </tr>
+                      </thead>
+
+                      <tbody>
+                        {orders.slice(-5).reverse().map((o, i) => (
+                          <tr key={i}>
+                            <td>{value(o, "orderId", "id")}</td>
+                            <td>{value(o, "name", "customerName")}</td>
+                            <td>{value(o, "mobile", "phone", "mobileNumber")}</td>
+                            <td>
+                              {value(o, "service", "serviceName", "selectedService")}
+                            </td>
+                            <td>₹{value(o, "price", "amount")}</td>
+                            <td>
+                              <span className="status">
+                                {value(o, "paymentStatus", "payment_status")}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
             </>
           )}
@@ -232,94 +416,245 @@ export default function Admin({ onClose }) {
           {tab === "Orders" && (
             <div className="panel">
               <h3>Complete Order Management</h3>
-              <input className="search" placeholder="Search name, mobile number or Order ID"
-                value={search} onChange={e=>setSearch(e.target.value)} />
-              <div className="table-wrap"><table>
-                <thead><tr>
-                  <th>Order / Date</th><th>Customer Details</th><th>Service</th>
-                  <th>Amount</th><th>Payment</th><th>Order Status</th><th>Details</th>
-                </tr></thead>
-                <tbody>
-                  {filteredOrders.map((o,i)=>(
-                    <tr key={i}>
-                      <td>{value(o,"orderId","id")}<br/>{value(o,"date","createdAt","timestamp")}</td>
-                      <td>
-                        <b>{value(o,"name","customerName")}</b><br/>
-                        {value(o,"mobile","phone","mobileNumber")}<br/>
-                        {value(o,"email")}
-                        <div className="actions" style={{marginTop:7}}>
-                          <a style={{color:"#e6bd62"}} href={"tel:"+value(o,"mobile","phone","mobileNumber")}>Call</a>
-                          <a style={{color:"#e6bd62"}} target="_blank" rel="noreferrer"
-                            href={"https://wa.me/91"+String(value(o,"mobile","phone","mobileNumber")).replace(/\D/g,"").slice(-10)}>WhatsApp</a>
-                        </div>
-                      </td>
-                      <td>{value(o,"service","serviceName","selectedService")}<br/>
-                        <small>{value(o,"details","orderDetails")}</small></td>
-                      <td>₹{value(o,"price","amount")}</td>
-                      <td>
-                        <select value={o.paymentStatus || o.payment_status || "Unpaid"}
-                          onChange={e=>updateOrder(orders.indexOf(o),"paymentStatus",e.target.value)}>
-                          <option>Unpaid</option><option>Paid</option>
-                          <option>Failed</option><option>Refunded</option>
-                        </select>
-                        <small>UTR: {value(o,"utr","transactionId","upiTransactionId")}</small><br/>
-                        <small>Method: {value(o,"paymentMethod","method")}</small>
-                      </td>
-                      <td>
-                        <select value={o.status || "Pending"}
-                          onChange={e=>updateOrder(orders.indexOf(o),"status",e.target.value)}>
-                          <option>Pending</option><option>Processing</option>
-                          <option>Completed</option><option>Cancelled</option>
-                        </select>
-                      </td>
-                      <td>
-                        <small>Payment time: {value(o,"paymentDate","paidAt")}</small><br/>
-                        <small>Document: {value(o,"document","documents","fileName")}</small>
-                      </td>
+
+              <input
+                className="search"
+                placeholder="Search name, mobile number or Order ID"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Order / Date</th>
+                      <th>Customer Details</th>
+                      <th>Service</th>
+                      <th>Amount</th>
+                      <th>Payment</th>
+                      <th>Order Status</th>
+                      <th>Details</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table></div>
-              {filteredOrders.length===0 && <div className="empty">कोई Order नहीं मिला।</div>}
+                  </thead>
+
+                  <tbody>
+                    {filteredOrders.map((o, i) => (
+                      <tr key={i}>
+                        <td>
+                          {value(o, "orderId", "id")}
+                          <br />
+                          {value(o, "date", "createdAt", "timestamp")}
+                        </td>
+
+                        <td>
+                          <b>{value(o, "name", "customerName")}</b>
+                          <br />
+                          {value(o, "mobile", "phone", "mobileNumber")}
+                          <br />
+                          {value(o, "email")}
+
+                          <div className="actions" style={{ marginTop: 7 }}>
+                            <a
+                              style={{ color: "#e6bd62" }}
+                              href={
+                                "tel:" +
+                                value(o, "mobile", "phone", "mobileNumber")
+                              }
+                            >
+                              Call
+                            </a>
+
+                            <a
+                              style={{ color: "#e6bd62" }}
+                              target="_blank"
+                              rel="noreferrer"
+                              href={
+                                "https://wa.me/91" +
+                                String(
+                                  value(o, "mobile", "phone", "mobileNumber")
+                                )
+                                  .replace(/\D/g, "")
+                                  .slice(-10)
+                              }
+                            >
+                              WhatsApp
+                            </a>
+                          </div>
+                        </td>
+
+                        <td>
+                          {value(o, "service", "serviceName", "selectedService")}
+                          <br />
+                          <small>{value(o, "details", "orderDetails")}</small>
+                        </td>
+
+                        <td>₹{value(o, "price", "amount")}</td>
+
+                        <td>
+                          <select
+                            value={o.paymentStatus || o.payment_status || "Unpaid"}
+                            onChange={(e) =>
+                              updateOrder(
+                                orders.indexOf(o),
+                                "paymentStatus",
+                                e.target.value
+                              )
+                            }
+                          >
+                            <option>Unpaid</option>
+                            <option>Paid</option>
+                            <option>Failed</option>
+                            <option>Refunded</option>
+                          </select>
+
+                          <small>
+                            UTR: {value(o, "utr", "transactionId", "upiTransactionId")}
+                          </small>
+                          <br />
+                          <small>
+                            Method: {value(o, "paymentMethod", "method")}
+                          </small>
+                        </td>
+
+                        <td>
+                          <select
+                            value={o.status || "Pending"}
+                            onChange={(e) =>
+                              updateOrder(
+                                orders.indexOf(o),
+                                "status",
+                                e.target.value
+                              )
+                            }
+                          >
+                            <option>Pending</option>
+                            <option>Processing</option>
+                            <option>Completed</option>
+                            <option>Cancelled</option>
+                          </select>
+                        </td>
+
+                        <td>
+                          <small>
+                            Payment time: {value(o, "paymentDate", "paidAt")}
+                          </small>
+                          <br />
+                          <small>
+                            Document: {value(o, "document", "documents", "fileName")}
+                          </small>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {filteredOrders.length === 0 && (
+                <div className="empty">कोई Order नहीं मिला।</div>
+              )}
             </div>
           )}
 
           {tab === "Payments" && (
             <>
               <div className="cards">
-                <div className="card"><small>Total Paid</small><h2>₹{totalRevenue}</h2></div>
-                <div className="card"><small>Pending Collection</small><h2>₹{pendingAmount}</h2></div>
-                <div className="card"><small>Paid Orders</small><h2>{orders.filter(o=>String(o.paymentStatus||o.payment_status).toLowerCase()==="paid").length}</h2></div>
+                <div className="card">
+                  <small>Total Paid</small>
+                  <h2>₹{totalRevenue}</h2>
+                </div>
+
+                <div className="card">
+                  <small>Pending Collection</small>
+                  <h2>₹{pendingAmount}</h2>
+                </div>
+
+                <div className="card">
+                  <small>Paid Orders</small>
+                  <h2>
+                    {
+                      orders.filter(
+                        (o) =>
+                          String(
+                            o.paymentStatus || o.payment_status
+                          ).toLowerCase() === "paid"
+                      ).length
+                    }
+                  </h2>
+                </div>
               </div>
+
               <div className="panel">
                 <h3>Payment Account Details</h3>
-                <p>Business: <b>Patel Digital Studio</b></p>
-                <p>UPI ID: <b className="gold">9301152277@ybl</b></p>
-                <p className="muted">Payment QR: आपके प्रोजेक्ट में उपलब्ध QR इमेज अलग से जोड़ी जाएगी।</p>
+
+                <p>
+                  Business: <b>Patel Digital Studio</b>
+                </p>
+
+                <p>
+                  UPI ID: <b className="gold">9301152277@ybl</b>
+                </p>
+
+                <p className="muted">
+                  Payment QR: आपके प्रोजेक्ट में उपलब्ध QR इमेज अलग से जोड़ी जाएगी।
+                </p>
               </div>
+
               <div className="panel">
                 <h3>Payment Transactions</h3>
-                <div className="table-wrap"><table>
-                  <thead><tr><th>Order ID</th><th>Customer</th><th>Mobile</th><th>Amount</th><th>UTR / Transaction ID</th><th>Date</th><th>Status</th></tr></thead>
-                  <tbody>{orders.map((o,i)=>(
-                    <tr key={i}>
-                      <td>{value(o,"orderId","id")}</td>
-                      <td>{value(o,"name","customerName")}</td>
-                      <td>{value(o,"mobile","phone","mobileNumber")}</td>
-                      <td>₹{value(o,"price","amount")}</td>
-                      <td>{value(o,"utr","transactionId","upiTransactionId")}</td>
-                      <td>{value(o,"paymentDate","paidAt","date","createdAt")}</td>
-                      <td>
-                        <select value={o.paymentStatus || o.payment_status || "Unpaid"}
-                          onChange={e=>updateOrder(i,"paymentStatus",e.target.value)}>
-                          <option>Unpaid</option><option>Paid</option>
-                          <option>Failed</option><option>Refunded</option>
-                        </select>
-                      </td>
-                    </tr>
-                  ))}</tbody>
-                </table></div>
-                <p className="muted">ध्यान दें: UTR और वास्तविक भुगतान की पुष्टि बैंक/UPI ऐप से जाँचकर ही करें।</p>
+
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Order ID</th>
+                        <th>Customer</th>
+                        <th>Mobile</th>
+                        <th>Amount</th>
+                        <th>UTR / Transaction ID</th>
+                        <th>Date</th>
+                        <th>Status</th>
+                      </tr>
+                    </thead>
+
+                    <tbody>
+                      {orders.map((o, i) => (
+                        <tr key={i}>
+                          <td>{value(o, "orderId", "id")}</td>
+                          <td>{value(o, "name", "customerName")}</td>
+                          <td>{value(o, "mobile", "phone", "mobileNumber")}</td>
+                          <td>₹{value(o, "price", "amount")}</td>
+                          <td>
+                            {value(o, "utr", "transactionId", "upiTransactionId")}
+                          </td>
+                          <td>
+                            {value(o, "paymentDate", "paidAt", "date", "createdAt")}
+                          </td>
+                          <td>
+                            <select
+                              value={
+                                o.paymentStatus || o.payment_status || "Unpaid"
+                              }
+                              onChange={(e) =>
+                                updateOrder(i, "paymentStatus", e.target.value)
+                              }
+                            >
+                              <option>Unpaid</option>
+                              <option>Paid</option>
+                              <option>Failed</option>
+                              <option>Refunded</option>
+                            </select>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <p className="muted">
+                  ध्यान दें: UTR और वास्तविक भुगतान की पुष्टि बैंक/UPI ऐप से
+                  जाँचकर ही करें।
+                </p>
               </div>
             </>
           )}
@@ -327,24 +662,61 @@ export default function Admin({ onClose }) {
           {tab === "Services" && (
             <div className="panel">
               <h3>Manage Services</h3>
+
               <div className="grid2">
-                <input placeholder="Service Name" value={newService}
-                  onChange={e=>setNewService(e.target.value)} />
-                <input type="number" placeholder="Price ₹" value={newPrice}
-                  onChange={e=>setNewPrice(e.target.value)} />
+                <input
+                  placeholder="Service Name"
+                  value={newService}
+                  onChange={(e) => setNewService(e.target.value)}
+                />
+
+                <input
+                  type="number"
+                  placeholder="Price ₹"
+                  value={newPrice}
+                  onChange={(e) => setNewPrice(e.target.value)}
+                />
               </div>
-              <button className="btn" onClick={addService}>+ Add Service</button>
-              {services.map(s=>(
-                <div key={s.id} className="card" style={{marginTop:10,display:"flex",justifyContent:"space-between",alignItems:"center",gap:10}}>
-                  <span>{s.name} — ₹{s.price}</span>
-                  <button className="btn red" onClick={()=>deleteService(s.id)}>Delete</button>
+
+              <button className="btn" onClick={addService}>
+                + Add Service
+              </button>
+
+              {services.map((s) => (
+                <div
+                  key={s.id}
+                  className="card"
+                  style={{
+                    marginTop: 10,
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    gap: 10
+                  }}
+                >
+                  <span>
+                    {s.name} — ₹{s.price}
+                  </span>
+
+                  <button
+                    className="btn red"
+                    onClick={() => deleteService(s.id)}
+                  >
+                    Delete
+                  </button>
                 </div>
               ))}
-              {services.length===0 && <p className="muted">अभी सेव की हुई सेवाएँ नहीं मिलीं।</p>}
+
+              {services.length === 0 && (
+                <p className="muted">अभी सेव की हुई सेवाएँ नहीं मिलीं।</p>
+              )}
             </div>
           )}
 
-          <footer className="muted" style={{textAlign:"center",padding:20}}>
+          <footer
+            className="muted"
+            style={{ textAlign: "center", padding: 20 }}
+          >
             PD • PATEL DIGITAL STUDIO • SMART DIGITAL SOLUTIONS
           </footer>
         </>
