@@ -1,5 +1,11 @@
 
 import React, { useState } from "react";
+import {
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword
+} from "firebase/auth";
+import { doc, setDoc, getDoc, serverTimestamp } from "firebase/firestore";
+import { auth, db } from "./firebase";
 
 export default function CustomerLogin({ onLogin }) {
   const [mode, setMode] = useState("login");
@@ -7,8 +13,9 @@ export default function CustomerLogin({ onLogin }) {
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
 
-  const submit = (e) => {
+  const submit = async (e) => {
     e.preventDefault();
     setError("");
 
@@ -22,33 +29,83 @@ export default function CustomerLogin({ onLogin }) {
       return;
     }
 
-    const users = JSON.parse(
-      localStorage.getItem("pds_customers") || "{}"
-    );
-
-    if (mode === "signup") {
-      if (!name.trim()) {
-        setError("Apna naam enter karein");
-        return;
-      }
-
-      if (users[mobile]) {
-        setError("Account pehle se bana hua hai. Login karein.");
-        return;
-      }
-
-      users[mobile] = { name: name.trim(), password };
-      localStorage.setItem("pds_customers", JSON.stringify(users));
-    } else {
-      if (!users[mobile] || users[mobile].password !== password) {
-        setError("Mobile number ya password galat hai");
-        return;
-      }
+    if (mode === "signup" && !name.trim()) {
+      setError("Apna naam enter karein");
+      return;
     }
 
-    const customer = { mobile, name: users[mobile].name };
-    localStorage.setItem("pds_customer_session", JSON.stringify(customer));
-    onLogin(customer);
+    setLoading(true);
+
+    // Mobile number ko Firebase ke liye email format dete hain.
+    const email = `${mobile}@pds-customer.com`;
+
+    try {
+      let user;
+
+      if (mode === "signup") {
+        const result = await createUserWithEmailAndPassword(
+          auth,
+          email,
+          password
+        );
+
+        user = result.user;
+
+        await setDoc(doc(db, "customers", user.uid), {
+          name: name.trim(),
+          mobile: mobile,
+          createdAt: serverTimestamp()
+        });
+
+        onLogin({ name: name.trim(), mobile });
+      } else {
+        const result = await signInWithEmailAndPassword(
+          auth,
+          email,
+          password
+        );
+
+        user = result.user;
+
+        const profile = await getDoc(
+          doc(db, "customers", user.uid)
+        );
+
+        if (!profile.exists()) {
+          setError("Customer profile nahi mila. Support se contact karein.");
+          return;
+        }
+
+        const data = profile.data();
+
+        onLogin({
+          name: data.name,
+          mobile: data.mobile
+        });
+      }
+    } catch (err) {
+      console.error("Firebase Login Error:", err);
+
+      if (err.code === "auth/email-already-in-use") {
+        setError("Account pehle se bana hua hai. Login karein.");
+      } else if (
+        err.code === "auth/invalid-credential" ||
+        err.code === "auth/wrong-password" ||
+        err.code === "auth/user-not-found"
+      ) {
+        setError("Mobile number ya password galat hai.");
+      } else if (err.code === "auth/weak-password") {
+        setError("Password kam se kam 6 characters ka rakhein.");
+      } else if (err.code === "auth/network-request-failed") {
+        setError("Internet connection check karein.");
+      } else if (err.code === "permission-denied") {
+        setError("Firestore Rules mein permission check karein.");
+      } else {
+        setError(err.message || "Login nahi ho paya. Dobara try karein.");
+      }
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -72,6 +129,7 @@ export default function CustomerLogin({ onLogin }) {
         <h1 style={{ color: "#e8bd65", textAlign: "center" }}>
           PATEL DIGITAL STUDIO
         </h1>
+
         <h2 style={{ textAlign: "center" }}>
           {mode === "login" ? "Customer Login" : "Create Account"}
         </h2>
@@ -107,8 +165,10 @@ export default function CustomerLogin({ onLogin }) {
 
         {error && <p style={{ color: "#ff7777" }}>{error}</p>}
 
-        <button type="submit" style={btn}>
-          {mode === "login" ? "LOGIN" : "CREATE ACCOUNT"}
+        <button type="submit" disabled={loading} style={btn}>
+          {loading
+            ? "PLEASE WAIT..."
+            : mode === "login" ? "LOGIN" : "CREATE ACCOUNT"}
         </button>
 
         <p style={{ textAlign: "center", marginTop: 20 }}>
@@ -152,3 +212,4 @@ const btn = {
   fontWeight: "bold",
   cursor: "pointer"
 };
+                         
