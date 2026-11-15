@@ -1,24 +1,41 @@
 
 import React, { useEffect, useMemo, useState } from "react";
-import { signInWithEmailAndPassword, signOut } from "firebase/auth";
-import { auth } from "./firebase";
+import { auth, db } from "./firebase";
+import {
+  signInWithEmailAndPassword,
+  signOut,
+  onAuthStateChanged
+} from "firebase/auth";
+import {
+  collection,
+  onSnapshot,
+  doc,
+  updateDoc,
+  addDoc,
+  deleteDoc,
+  serverTimestamp
+} from "firebase/firestore";
 
 const ADMIN_EMAIL = "mohanpatel7791@gmail.com";
+const UPI = "9301152277@ybl";
+const BUSINESS = "Patel Digital Studio";
 
-const styles = `
+const css = `
 *{box-sizing:border-box}
-.admin{min-height:100vh;background:#090909;color:#f5f0df;font-family:Arial,sans-serif;padding:18px}
-.admin button,.admin input,.admin select{font:inherit}
+.admin{min-height:100vh;background:#090909;color:#f5f0df;font-family:Arial,sans-serif;padding:16px}
+.admin button,.admin input,.admin select,.admin textarea{font:inherit}
 .admin button{cursor:pointer}
-.gold{color:#d9ad52}
+.gold{color:#dfb653}
 .login-wrap{min-height:85vh;display:grid;place-items:center}
 .login{width:100%;max-width:390px;background:#171717;border:1px solid #b78b35;border-radius:18px;padding:28px;box-shadow:0 12px 45px #000}
 .logo{font-size:38px;font-weight:900;color:#e6bd62;text-align:center}
 .login h2{text-align:center;color:#fff}
-.admin input,.admin select{width:100%;padding:12px;margin:7px 0 14px;background:#242424;color:white;border:1px solid #555;border-radius:8px}
+.admin input,.admin select,.admin textarea{width:100%;padding:12px;margin:7px 0 14px;background:#242424;color:white;border:1px solid #555;border-radius:8px}
+.admin textarea{min-height:75px}
 .btn{border:0;border-radius:8px;padding:11px 15px;background:#c99b43;color:#111;font-weight:bold}
 .btn.dark{background:#292929;color:#f5d58a;border:1px solid #80622d}
 .btn.red{background:#7d2828;color:white}
+.btn:disabled{opacity:.5}
 .top{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;border-bottom:1px solid #604a24;padding-bottom:16px}
 .top h2{margin:0;color:#e6bd62}
 .nav{display:flex;gap:8px;flex-wrap:wrap;margin:18px 0}
@@ -30,271 +47,341 @@ const styles = `
 .card h2{color:#e6bd62;margin:10px 0 0;font-size:25px}
 .panel{background:#171717;border:1px solid #44351e;border-radius:12px;padding:16px;margin:14px 0;overflow:hidden}
 .panel h3{color:#e6bd62;margin-top:0}
-.search{max-width:450px}
 .table-wrap{overflow-x:auto}
-table{width:100%;border-collapse:collapse;min-width:750px}
+table{width:100%;border-collapse:collapse;min-width:760px}
 th,td{padding:12px 9px;border-bottom:1px solid #38332a;text-align:left;font-size:13px;vertical-align:top}
 th{color:#e6bd62}
 .status{display:inline-block;padding:5px 8px;border-radius:20px;background:#39301e;color:#f4d38a;font-size:12px}
 .muted{color:#aaa;font-size:13px}
-.actions{display:flex;gap:7px;flex-wrap:wrap}
+.actions{display:flex;gap:7px;flex-wrap:wrap;align-items:center}
 .actions button{padding:7px 9px;font-size:12px}
 .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px}
 .empty{text-align:center;color:#aaa;padding:30px}
-@media(max-width:600px){.admin{padding:11px}.login{padding:22px}.top h2{font-size:19px}.nav button{font-size:12px;padding:9px}.panel{padding:11px}}
+.service{background:#202020;border:1px solid #55401e;padding:14px;border-radius:10px;margin:9px 0}
+.error{color:#ff7777}
+.success{color:#8bdb9b}
+.qr{width:210px;max-width:100%;background:white;padding:10px;border-radius:10px}
+@media(max-width:600px){.admin{padding:10px}.login{padding:22px}.top h2{font-size:19px}.nav button{font-size:12px;padding:9px}.panel{padding:11px}}
 `;
 
-function readOrders() {
-  const keys = ["pds_orders", "orders", "orderData", "customerOrders"];
-
-  for (const key of keys) {
-    try {
-      const data = JSON.parse(localStorage.getItem(key) || "null");
-
-      if (Array.isArray(data)) return { key, data };
-      if (data && Array.isArray(data.orders)) {
-        return { key, data: data.orders };
-      }
-    } catch {}
-  }
-
-  return { key: "pds_orders", data: [] };
+function val(v) {
+  if (v === undefined || v === null || v === "") return "—";
+  if (v?.toDate) return v.toDate().toLocaleString("en-IN");
+  return String(v);
 }
 
 export default function Admin({ onClose }) {
-  const [loggedIn, setLoggedIn] = useState(false);
-  const [user, setUser] = useState("");
-  const [pass, setPass] = useState("");
+  const [email, setEmail] = useState(ADMIN_EMAIL);
+  const [password, setPassword] = useState("");
+  const [logged, setLogged] = useState(false);
+  const [checking, setChecking] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+
   const [tab, setTab] = useState("Dashboard");
   const [orders, setOrders] = useState([]);
-  const [storageKey, setStorageKey] = useState("pds_orders");
+  const [services, setServices] = useState([]);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("All");
 
-  const [services, setServices] = useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem("pds_services") || "[]");
-    } catch {
-      return [];
-    }
-  });
+  const [serviceName, setServiceName] = useState("");
+  const [servicePrice, setServicePrice] = useState("");
+  const [description, setDescription] = useState("");
+  const [qrAmount, setQrAmount] = useState("");
 
-  const [newService, setNewService] = useState("");
-  const [newPrice, setNewPrice] = useState("");
-  const [loading, setLoading] = useState(false);
-
-  const refreshOrders = () => {
-    const result = readOrders();
-    setOrders(result.data);
-    setStorageKey(result.key);
-  };
-
+  // Verify admin session
   useEffect(() => {
-    refreshOrders();
+    const unsub = onAuthStateChanged(auth, (u) => {
+      const allowed =
+        u?.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase();
+
+      setLogged(Boolean(allowed));
+      setChecking(false);
+
+      if (u && !allowed) {
+        signOut(auth).catch(console.error);
+      }
+    });
+    return unsub;
   }, []);
 
-  const saveOrders = (updated) => {
-    setOrders(updated);
-    localStorage.setItem(storageKey, JSON.stringify(updated));
-  };
+  // Live orders
+  useEffect(() => {
+    if (!logged) return;
 
-  // Firebase Admin Login
+    const unsub = onSnapshot(
+      collection(db, "orders"),
+      (snapshot) => {
+        const list = snapshot.docs.map((d) => ({
+          ...d.data(),
+          id: d.id
+        }));
+
+        list.sort((a, b) => {
+          const ta = a.createdAt?.toMillis?.() || 0;
+          const tb = b.createdAt?.toMillis?.() || 0;
+          return tb - ta;
+        });
+
+        setOrders(list);
+        setError("");
+      },
+      (e) => {
+        console.error(e);
+        setError("Orders लोड नहीं हुए। Firestore Rules जाँचें।");
+      }
+    );
+
+    return unsub;
+  }, [logged]);
+
+  // Live services
+  useEffect(() => {
+    if (!logged) return;
+
+    const unsub = onSnapshot(
+      collection(db, "services"),
+      (snapshot) => {
+        setServices(snapshot.docs.map((d) => ({
+          ...d.data(),
+          id: d.id
+        })));
+      },
+      (e) => {
+        console.error(e);
+        setError("Services लोड नहीं हुईं।");
+      }
+    );
+
+    return unsub;
+  }, [logged]);
+
   const login = async (e) => {
     e.preventDefault();
+    setLoading(true);
     setError("");
+    setMessage("");
 
-    if (user.trim().toLowerCase() !== ADMIN_EMAIL) {
-      setError("यह Admin Email मान्य नहीं है।");
+    if (email.trim().toLowerCase() !== ADMIN_EMAIL) {
+      setError("Admin Email सही नहीं है।");
+      setLoading(false);
       return;
     }
-
-    setLoading(true);
 
     try {
       const result = await signInWithEmailAndPassword(
         auth,
-        user.trim().toLowerCase(),
-        pass
+        ADMIN_EMAIL,
+        password
       );
 
       if (result.user.email?.toLowerCase() !== ADMIN_EMAIL) {
         await signOut(auth);
-        setError("आपको Admin Panel की अनुमति नहीं है।");
-        return;
-      }
-
-      setLoggedIn(true);
-      setError("");
-      setPass("");
-      refreshOrders();
-    } catch (err) {
-      console.error("Admin Login Error:", err);
-
-      if (
-        err.code === "auth/invalid-credential" ||
-        err.code === "auth/user-not-found" ||
-        err.code === "auth/wrong-password"
-      ) {
-        setError("Admin Email या Password गलत है।");
-      } else if (err.code === "auth/too-many-requests") {
-        setError("बहुत बार कोशिश हुई है। कुछ देर बाद प्रयास करें।");
-      } else if (err.code === "auth/network-request-failed") {
-        setError("Internet connection जाँचें।");
+        setError("Admin Access नहीं मिला।");
       } else {
-        setError("Login नहीं हुआ। कृपया दोबारा कोशिश करें।");
+        setPassword("");
+        setLogged(true);
       }
+    } catch (e) {
+      console.error(e);
+      setError(e.code === "auth/invalid-credential"
+        ? "Email या Password गलत है।"
+        : e.message);
     } finally {
       setLoading(false);
     }
   };
 
-  // Firebase Logout
   const logout = async () => {
     try {
       await signOut(auth);
-      setLoggedIn(false);
-      setUser("");
-      setPass("");
-      setError("");
+      setLogged(false);
+      setPassword("");
+      setMessage("");
       setTab("Dashboard");
-    } catch (err) {
-      console.error("Logout Error:", err);
-      setError("Logout नहीं हो पाया। दोबारा कोशिश करें।");
+      if (onClose) onClose();
+    } catch (e) {
+      setError("Logout नहीं हुआ।");
     }
   };
 
-  const updateOrder = (index, field, value) => {
-    const updated = [...orders];
-    updated[index] = { ...updated[index], [field]: value };
-    saveOrders(updated);
+  const updateOrder = async (id, field, value) => {
+    try {
+      await updateDoc(doc(db, "orders", id), {
+        [field]: value,
+        updatedAt: serverTimestamp()
+      });
+      setMessage("Order अपडेट हो गया।");
+      setError("");
+    } catch (e) {
+      console.error(e);
+      setError("Order अपडेट नहीं हुआ।");
+    }
   };
 
-  const filteredOrders = useMemo(() => {
+  const removeOrder = async (id) => {
+    if (!window.confirm("क्या यह Order Delete करना है?")) return;
+
+    try {
+      await deleteDoc(doc(db, "orders", id));
+      setMessage("Order Delete हो गया।");
+    } catch (e) {
+      setError("Order Delete नहीं हुआ।");
+    }
+  };
+
+  const addService = async (e) => {
+    e.preventDefault();
+    const price = Number(servicePrice);
+
+    if (!serviceName.trim() || servicePrice === "" ||
+        !Number.isFinite(price) || price < 0) {
+      setError("Service Name और सही Price भरें।");
+      return;
+    }
+
+    try {
+      await addDoc(collection(db, "services"), {
+        name: serviceName.trim(),
+        price,
+        description: description.trim(),
+        active: true,
+        createdAt: serverTimestamp()
+      });
+
+      setServiceName("");
+      setServicePrice("");
+      setDescription("");
+      setMessage("नई Service जोड़ दी गई।");
+      setError("");
+    } catch (e) {
+      console.error(e);
+      setError("Service नहीं जुड़ी।");
+    }
+  };
+
+  const editService = async (s) => {
+    const name = window.prompt("Service Name", s.name);
+    if (name === null || !name.trim()) return;
+
+    const priceText = window.prompt("New Price", String(s.price));
+    if (priceText === null) return;
+
+    const price = Number(priceText);
+    if (!Number.isFinite(price) || price < 0) {
+      setError("सही Price डालें।");
+      return;
+    }
+
+    try {
+      await updateDoc(doc(db, "services", s.id), {
+        name: name.trim(),
+        price,
+        updatedAt: serverTimestamp()
+      });
+      setMessage("Service अपडेट हो गई।");
+    } catch (e) {
+      setError("Service अपडेट नहीं हुई।");
+    }
+  };
+
+  const toggleService = async (s) => {
+    try {
+      await updateDoc(doc(db, "services", s.id), {
+        active: s.active === false,
+        updatedAt: serverTimestamp()
+      });
+      setMessage("Service Status बदल गया।");
+    } catch (e) {
+      setError("Service Status नहीं बदला।");
+    }
+  };
+
+  const removeService = async (id) => {
+    if (!window.confirm("क्या Service Delete करनी है?")) return;
+
+    try {
+      await deleteDoc(doc(db, "services", id));
+      setMessage("Service हटा दी गई।");
+    } catch (e) {
+      setError("Service Delete नहीं हुई।");
+    }
+  };
+
+  const filtered = useMemo(() => {
     return orders.filter((o) => {
-      const mobile = String(o.mobile || o.phone || o.mobileNumber || "");
-      const name = String(o.name || o.customerName || "");
-      const id = String(o.orderId || o.id || "");
+      const text = [
+        o.name, o.mobile, o.phone, o.orderId,
+        o.service, o.serviceName, o.uid
+      ].join(" ").toLowerCase();
 
-      const matchesSearch = [mobile, name, id]
-        .join(" ")
-        .toLowerCase()
-        .includes(search.toLowerCase());
+      const payment = String(o.paymentStatus || "Unpaid").toLowerCase();
 
-      const payment = String(
-        o.paymentStatus || o.payment_status || "Unpaid"
-      );
-
-      const matchesFilter =
-        filter === "All" ||
-        (filter === "Paid" && payment.toLowerCase() === "paid") ||
-        (filter === "Unpaid" && payment.toLowerCase() !== "paid");
-
-      return matchesSearch && matchesFilter;
+      return text.includes(search.toLowerCase()) &&
+        (filter === "All" ||
+          (filter === "Paid" && payment === "paid") ||
+          (filter === "Unpaid" && payment !== "paid"));
     });
   }, [orders, search, filter]);
 
-  const totalRevenue = orders.reduce((sum, o) => {
-    const paid =
-      String(o.paymentStatus || o.payment_status || "").toLowerCase() === "paid";
+  const revenue = orders.reduce((sum, o) =>
+    sum + (String(o.paymentStatus).toLowerCase() === "paid"
+      ? Number(o.price || o.amount || 0) : 0), 0);
 
-    return sum + (paid ? Number(o.price || o.amount || 0) : 0);
-  }, 0);
+  const pending = orders.reduce((sum, o) =>
+    sum + (String(o.paymentStatus).toLowerCase() !== "paid"
+      ? Number(o.price || o.amount || 0) : 0), 0);
 
-  const pendingAmount = orders.reduce((sum, o) => {
-    const paid =
-      String(o.paymentStatus || o.payment_status || "").toLowerCase() === "paid";
+  const qrLink =
+    "https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=" +
+    encodeURIComponent(
+      "upi://pay?pa=" + UPI +
+      "&pn=Patel%20Digital%20Studio&cu=INR" +
+      (Number(qrAmount) > 0 ? "&am=" + Number(qrAmount) : "")
+    );
 
-    return sum + (!paid ? Number(o.price || o.amount || 0) : 0);
-  }, 0);
-
-  const addService = () => {
-    if (!newService.trim() || newPrice === "") return;
-
-    const updated = [
-      ...services,
-      {
-        id: Date.now(),
-        name: newService.trim(),
-        price: Number(newPrice)
-      }
-    ];
-
-    setServices(updated);
-    localStorage.setItem("pds_services", JSON.stringify(updated));
-    setNewService("");
-    setNewPrice("");
-  };
-
-  const deleteService = (id) => {
-    const updated = services.filter((s) => s.id !== id);
-    setServices(updated);
-    localStorage.setItem("pds_services", JSON.stringify(updated));
-  };
-
-  const value = (o, ...keys) => {
-    for (const key of keys) {
-      if (o[key] !== undefined && o[key] !== null && o[key] !== "") {
-        return o[key];
-      }
-    }
-
-    return "—";
-  };
+  if (checking) {
+    return <div className="admin"><style>{css}</style><div className="empty">Checking Admin...</div></div>;
+  }
 
   return (
     <div className="admin">
-      <style>{styles}</style>
+      <style>{css}</style>
 
-      {!loggedIn ? (
+      {!logged ? (
         <div className="login-wrap">
           <form className="login" onSubmit={login}>
             <div className="logo">PD</div>
-
             <h2>ADMIN LOGIN</h2>
-
-            <p className="muted" style={{ textAlign: "center" }}>
-              PATEL DIGITAL STUDIO
-            </p>
+            <p className="muted" style={{ textAlign: "center" }}>{BUSINESS}</p>
 
             <label>Admin Email</label>
             <input
               type="email"
-              value={user}
-              onChange={(e) => setUser(e.target.value)}
-              placeholder="Enter Admin Email"
-              autoComplete="username"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
               required
             />
 
             <label>Password</label>
             <input
               type="password"
-              value={pass}
-              onChange={(e) => setPass(e.target.value)}
-              placeholder="Enter Firebase Password"
-              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Firebase Admin Password"
               required
             />
 
-            {error && <p style={{ color: "#ff7777" }}>{error}</p>}
+            {error && <p className="error">{error}</p>}
 
-            <button
-              type="submit"
-              className="btn"
-              style={{ width: "100%" }}
-              disabled={loading}
-            >
-              {loading ? "PLEASE WAIT..." : "Secure Login"}
+            <button className="btn" style={{ width: "100%" }} disabled={loading}>
+              {loading ? "PLEASE WAIT..." : "SECURE LOGIN"}
             </button>
 
             {onClose && (
-              <button
-                type="button"
-                className="btn dark"
-                style={{ width: "100%", marginTop: 10 }}
-                onClick={onClose}
-              >
+              <button type="button" className="btn dark"
+                style={{ width: "100%", marginTop: 10 }} onClick={onClose}>
                 Back to Website
               </button>
             )}
@@ -304,39 +391,23 @@ export default function Admin({ onClose }) {
         <>
           <header className="top">
             <div>
-              <div
-                className="logo"
-                style={{ textAlign: "left", fontSize: 27 }}
-              >
-                PD
-              </div>
-
+              <div className="logo" style={{ textAlign: "left", fontSize: 28 }}>PD</div>
               <h2>Patel Digital Studio</h2>
-
-              <small className="muted">
-                Premium Admin Control Panel
-              </small>
+              <small className="muted">Premium Admin Control Panel</small>
             </div>
-
             <div className="actions">
-              <button className="btn dark" onClick={refreshOrders}>
-                Refresh
-              </button>
-
-              <button className="btn red" onClick={logout}>
-                Logout
-              </button>
+              <button className="btn red" onClick={logout}>Logout</button>
             </div>
           </header>
 
+          {error && <p className="error">{error}</p>}
+          {message && <p className="success">{message}</p>}
+
           <nav className="nav">
-            {["Dashboard", "Orders", "Payments", "Services"].map((item) => (
-              <button
-                key={item}
-                className={tab === item ? "active" : ""}
-                onClick={() => setTab(item)}
-              >
-                {item}
+            {["Dashboard", "Orders", "Payments", "Services"].map((t) => (
+              <button key={t} className={tab === t ? "active" : ""}
+                onClick={() => { setTab(t); setError(""); setMessage(""); }}>
+                {t}
               </button>
             ))}
           </nav>
@@ -344,65 +415,30 @@ export default function Admin({ onClose }) {
           {tab === "Dashboard" && (
             <>
               <h2 className="gold">Dashboard Overview</h2>
-
               <div className="cards">
-                <div className="card">
-                  <small>Total Orders</small>
-                  <h2>{orders.length}</h2>
-                </div>
-
-                <div className="card">
-                  <small>Paid Collection</small>
-                  <h2>₹{totalRevenue}</h2>
-                </div>
-
-                <div className="card">
-                  <small>Pending Amount</small>
-                  <h2>₹{pendingAmount}</h2>
-                </div>
-
-                <div className="card">
-                  <small>Total Services</small>
-                  <h2>{services.length}</h2>
-                </div>
+                <div className="card"><small>Total Orders</small><h2>{orders.length}</h2></div>
+                <div className="card"><small>Paid Collection</small><h2>₹{revenue}</h2></div>
+                <div className="card"><small>Pending Amount</small><h2>₹{pending}</h2></div>
+                <div className="card"><small>Total Services</small><h2>{services.length}</h2></div>
               </div>
 
               <div className="panel">
                 <h3>Recent Orders</h3>
-
                 {orders.length === 0 ? (
-                  <div className="empty">
-                    अभी कोई सेव किया हुआ Order नहीं मिला।
-                  </div>
+                  <div className="empty">अभी कोई Order नहीं आया है।</div>
                 ) : (
                   <div className="table-wrap">
                     <table>
-                      <thead>
-                        <tr>
-                          <th>Order ID</th>
-                          <th>Customer</th>
-                          <th>Mobile</th>
-                          <th>Service</th>
-                          <th>Amount</th>
-                          <th>Payment</th>
-                        </tr>
-                      </thead>
-
+                      <thead><tr><th>Order ID</th><th>Customer</th><th>Mobile</th><th>Service</th><th>Amount</th><th>Payment</th></tr></thead>
                       <tbody>
-                        {orders.slice(-5).reverse().map((o, i) => (
-                          <tr key={i}>
-                            <td>{value(o, "orderId", "id")}</td>
-                            <td>{value(o, "name", "customerName")}</td>
-                            <td>{value(o, "mobile", "phone", "mobileNumber")}</td>
-                            <td>
-                              {value(o, "service", "serviceName", "selectedService")}
-                            </td>
-                            <td>₹{value(o, "price", "amount")}</td>
-                            <td>
-                              <span className="status">
-                                {value(o, "paymentStatus", "payment_status")}
-                              </span>
-                            </td>
+                        {orders.slice(0, 5).map((o) => (
+                          <tr key={o.id}>
+                            <td>{o.id}</td>
+                            <td>{val(o.name)}</td>
+                            <td>{val(o.mobile)}</td>
+                            <td>{val(o.service)}</td>
+                            <td>₹{o.price || 0}</td>
+                            <td><span className="status">{val(o.paymentStatus)}</span></td>
                           </tr>
                         ))}
                       </tbody>
@@ -416,308 +452,127 @@ export default function Admin({ onClose }) {
           {tab === "Orders" && (
             <div className="panel">
               <h3>Complete Order Management</h3>
-
-              <input
-                className="search"
-                placeholder="Search name, mobile number or Order ID"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
-
+              <div className="grid2">
+                <input placeholder="Search name, mobile, ID or UID"
+                  value={search} onChange={(e) => setSearch(e.target.value)} />
+                <select value={filter} onChange={(e) => setFilter(e.target.value)}>
+                  <option>All</option><option>Paid</option><option>Unpaid</option>
+                </select>
+              </div>
               <div className="table-wrap">
                 <table>
                   <thead>
-                    <tr>
-                      <th>Order / Date</th>
-                      <th>Customer Details</th>
-                      <th>Service</th>
-                      <th>Amount</th>
-                      <th>Payment</th>
-                      <th>Order Status</th>
-                      <th>Details</th>
-                    </tr>
+                    <tr><th>Order / Date</th><th>Customer</th><th>Service</th><th>Amount</th><th>Payment</th><th>Status</th><th>Action</th></tr>
                   </thead>
-
                   <tbody>
-                    {filteredOrders.map((o, i) => (
-                      <tr key={i}>
+                    {filtered.map((o) => (
+                      <tr key={o.id}>
+                        <td>{o.id}<br/><small>{val(o.createdAt)}</small></td>
                         <td>
-                          {value(o, "orderId", "id")}
-                          <br />
-                          {value(o, "date", "createdAt", "timestamp")}
-                        </td>
-
-                        <td>
-                          <b>{value(o, "name", "customerName")}</b>
-                          <br />
-                          {value(o, "mobile", "phone", "mobileNumber")}
-                          <br />
-                          {value(o, "email")}
-
-                          <div className="actions" style={{ marginTop: 7 }}>
-                            <a
-                              style={{ color: "#e6bd62" }}
-                              href={
-                                "tel:" +
-                                value(o, "mobile", "phone", "mobileNumber")
-                              }
-                            >
-                              Call
-                            </a>
-
-                            <a
-                              style={{ color: "#e6bd62" }}
-                              target="_blank"
-                              rel="noreferrer"
-                              href={
-                                "https://wa.me/91" +
-                                String(
-                                  value(o, "mobile", "phone", "mobileNumber")
-                                )
-                                  .replace(/\D/g, "")
-                                  .slice(-10)
-                              }
-                            >
-                              WhatsApp
-                            </a>
+                          <b>{val(o.name)}</b><br/>{val(o.mobile)}
+                          <br/><small>UID: {val(o.uid)}</small>
+                          <div className="actions">
+                            {o.mobile && <a className="gold" href={"tel:" + o.mobile}>Call</a>}
+                            {o.mobile && <a className="gold" target="_blank" rel="noreferrer"
+                              href={"https://wa.me/91" + String(o.mobile).replace(/\D/g, "").slice(-10)}>WhatsApp</a>}
                           </div>
                         </td>
-
+                        <td>{val(o.service)}<br/><small>{val(o.details)}</small></td>
+                        <td>₹{o.price || 0}</td>
                         <td>
-                          {value(o, "service", "serviceName", "selectedService")}
-                          <br />
-                          <small>{value(o, "details", "orderDetails")}</small>
-                        </td>
-
-                        <td>₹{value(o, "price", "amount")}</td>
-
-                        <td>
-                          <select
-                            value={o.paymentStatus || o.payment_status || "Unpaid"}
-                            onChange={(e) =>
-                              updateOrder(
-                                orders.indexOf(o),
-                                "paymentStatus",
-                                e.target.value
-                              )
-                            }
-                          >
-                            <option>Unpaid</option>
-                            <option>Paid</option>
-                            <option>Failed</option>
-                            <option>Refunded</option>
+                          <select value={o.paymentStatus || "Unpaid"}
+                            onChange={(e) => updateOrder(o.id, "paymentStatus", e.target.value)}>
+                            <option>Unpaid</option><option>Paid</option><option>Failed</option><option>Refunded</option>
                           </select>
-
-                          <small>
-                            UTR: {value(o, "utr", "transactionId", "upiTransactionId")}
-                          </small>
-                          <br />
-                          <small>
-                            Method: {value(o, "paymentMethod", "method")}
-                          </small>
+                          <small>UTR: {val(o.utr)}</small>
+                          <br/>
+                          <small>Submitted: {o.paymentSubmitted ? "Yes" : "No"}</small>
                         </td>
-
                         <td>
-                          <select
-                            value={o.status || "Pending"}
-                            onChange={(e) =>
-                              updateOrder(
-                                orders.indexOf(o),
-                                "status",
-                                e.target.value
-                              )
-                            }
-                          >
-                            <option>Pending</option>
-                            <option>Processing</option>
-                            <option>Completed</option>
-                            <option>Cancelled</option>
+                          <select value={o.status || "Pending"}
+                            onChange={(e) => updateOrder(o.id, "status", e.target.value)}>
+                            <option>Pending</option><option>Processing</option><option>Completed</option><option>Cancelled</option>
                           </select>
                         </td>
-
-                        <td>
-                          <small>
-                            Payment time: {value(o, "paymentDate", "paidAt")}
-                          </small>
-                          <br />
-                          <small>
-                            Document: {value(o, "document", "documents", "fileName")}
-                          </small>
-                        </td>
+                        <td><button className="btn red" onClick={() => removeOrder(o.id)}>Delete</button></td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
-
-              {filteredOrders.length === 0 && (
-                <div className="empty">कोई Order नहीं मिला।</div>
-              )}
+              {filtered.length === 0 && <div className="empty">कोई Order नहीं मिला।</div>}
             </div>
           )}
 
           {tab === "Payments" && (
             <>
               <div className="cards">
-                <div className="card">
-                  <small>Total Paid</small>
-                  <h2>₹{totalRevenue}</h2>
-                </div>
-
-                <div className="card">
-                  <small>Pending Collection</small>
-                  <h2>₹{pendingAmount}</h2>
-                </div>
-
-                <div className="card">
-                  <small>Paid Orders</small>
-                  <h2>
-                    {
-                      orders.filter(
-                        (o) =>
-                          String(
-                            o.paymentStatus || o.payment_status
-                          ).toLowerCase() === "paid"
-                      ).length
-                    }
-                  </h2>
-                </div>
+                <div className="card"><small>Paid Collection</small><h2>₹{revenue}</h2></div>
+                <div className="card"><small>Pending Collection</small><h2>₹{pending}</h2></div>
+                <div className="card"><small>Paid Orders</small><h2>{orders.filter(o => String(o.paymentStatus).toLowerCase() === "paid").length}</h2></div>
               </div>
-
               <div className="panel">
-                <h3>Payment Account Details</h3>
-
-                <p>
-                  Business: <b>Patel Digital Studio</b>
-                </p>
-
-                <p>
-                  UPI ID: <b className="gold">9301152277@ybl</b>
-                </p>
-
-                <p className="muted">
-                  Payment QR: आपके प्रोजेक्ट में उपलब्ध QR इमेज अलग से जोड़ी जाएगी।
-                </p>
-              </div>
-
-              <div className="panel">
-                <h3>Payment Transactions</h3>
-
-                <div className="table-wrap">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Order ID</th>
-                        <th>Customer</th>
-                        <th>Mobile</th>
-                        <th>Amount</th>
-                        <th>UTR / Transaction ID</th>
-                        <th>Date</th>
-                        <th>Status</th>
-                      </tr>
-                    </thead>
-
-                    <tbody>
-                      {orders.map((o, i) => (
-                        <tr key={i}>
-                          <td>{value(o, "orderId", "id")}</td>
-                          <td>{value(o, "name", "customerName")}</td>
-                          <td>{value(o, "mobile", "phone", "mobileNumber")}</td>
-                          <td>₹{value(o, "price", "amount")}</td>
-                          <td>
-                            {value(o, "utr", "transactionId", "upiTransactionId")}
-                          </td>
-                          <td>
-                            {value(o, "paymentDate", "paidAt", "date", "createdAt")}
-                          </td>
-                          <td>
-                            <select
-                              value={
-                                o.paymentStatus || o.payment_status || "Unpaid"
-                              }
-                              onChange={(e) =>
-                                updateOrder(i, "paymentStatus", e.target.value)
-                              }
-                            >
-                              <option>Unpaid</option>
-                              <option>Paid</option>
-                              <option>Failed</option>
-                              <option>Refunded</option>
-                            </select>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                <h3>Business Payment Account</h3>
+                <p>Business: <b>{BUSINESS}</b></p>
+                <p>UPI ID: <b className="gold">{UPI}</b></p>
+                <label>QR Amount (₹), optional</label>
+                <input type="number" min="1" value={qrAmount}
+                  onChange={(e) => setQrAmount(e.target.value)} placeholder="Enter amount"/>
+                <div style={{ textAlign: "center", padding: 15 }}>
+                  <img className="qr" src={qrLink} alt="Business UPI QR"/>
+                  <p className="gold">{BUSINESS}</p>
+                  <p>{UPI}</p>
+                  <a className="btn" href={"upi://pay?pa=" + UPI + "&pn=Patel%20Digital%20Studio&cu=INR" + (Number(qrAmount) > 0 ? "&am=" + Number(qrAmount) : "")}>
+                    Open UPI App
+                  </a>
                 </div>
-
-                <p className="muted">
-                  ध्यान दें: UTR और वास्तविक भुगतान की पुष्टि बैंक/UPI ऐप से
-                  जाँचकर ही करें।
-                </p>
+                <p className="muted">Payment को Paid तभी करें जब बैंक खाते में वास्तविक भुगतान की पुष्टि हो जाए।</p>
               </div>
             </>
           )}
 
           {tab === "Services" && (
-            <div className="panel">
-              <h3>Manage Services</h3>
-
-              <div className="grid2">
-                <input
-                  placeholder="Service Name"
-                  value={newService}
-                  onChange={(e) => setNewService(e.target.value)}
-                />
-
-                <input
-                  type="number"
-                  placeholder="Price ₹"
-                  value={newPrice}
-                  onChange={(e) => setNewPrice(e.target.value)}
-                />
+            <>
+              <div className="panel">
+                <h3>Add New Service</h3>
+                <form onSubmit={addService}>
+                  <label>Service Name</label>
+                  <input value={serviceName} onChange={(e) => setServiceName(e.target.value)} placeholder="PAN Card" required/>
+                  <label>Price ₹</label>
+                  <input type="number" min="0" value={servicePrice} onChange={(e) => setServicePrice(e.target.value)} placeholder="199" required/>
+                  <label>Description</label>
+                  <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Service details"/>
+                  <button className="btn">+ Add Service</button>
+                </form>
               </div>
-
-              <button className="btn" onClick={addService}>
-                + Add Service
-              </button>
-
-              {services.map((s) => (
-                <div
-                  key={s.id}
-                  className="card"
-                  style={{
-                    marginTop: 10,
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    gap: 10
-                  }}
-                >
-                  <span>
-                    {s.name} — ₹{s.price}
-                  </span>
-
-                  <button
-                    className="btn red"
-                    onClick={() => deleteService(s.id)}
-                  >
-                    Delete
-                  </button>
-                </div>
-              ))}
-
-              {services.length === 0 && (
-                <p className="muted">अभी सेव की हुई सेवाएँ नहीं मिलीं।</p>
-              )}
-            </div>
+              <div className="panel">
+                <h3>All Services ({services.length})</h3>
+                {services.map((s) => (
+                  <div className="service" key={s.id}>
+                    <div className="actions" style={{ justifyContent: "space-between" }}>
+                      <div>
+                        <b className="gold">{s.name}</b>
+                        <p>₹{s.price}</p>
+                        <small className="muted">{s.description}</small>
+                        <p><span className="status">{s.active === false ? "Inactive" : "Active"}</span></p>
+                      </div>
+                      <div className="actions">
+                        <button className="btn dark" onClick={() => editService(s)}>Edit</button>
+                        <button className="btn dark" onClick={() => toggleService(s)}>
+                          {s.active === false ? "Activate" : "Deactivate"}
+                        </button>
+                        <button className="btn red" onClick={() => removeService(s.id)}>Delete</button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                {services.length === 0 && <div className="empty">अभी कोई Service नहीं है।</div>}
+              </div>
+            </>
           )}
 
-          <footer
-            className="muted"
-            style={{ textAlign: "center", padding: 20 }}
-          >
-            PD • PATEL DIGITAL STUDIO • SMART DIGITAL SOLUTIONS
+          <footer className="muted" style={{ textAlign: "center", padding: 20 }}>
+            PD · PATEL DIGITAL STUDIO · SMART DIGITAL SOLUTIONS
           </footer>
         </>
       )}
