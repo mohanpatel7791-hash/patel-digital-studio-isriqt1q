@@ -1,14 +1,21 @@
 
 import React, { useEffect, useState } from "react";
+
 import {
   collection,
   addDoc,
-  getDocs,
+  onSnapshot,
   query,
   orderBy,
   serverTimestamp
 } from "firebase/firestore";
-import { db } from "./firebase";
+
+import {
+  ref,
+  set
+} from "firebase/database";
+
+import { db, rtdb } from "./firebase";
 
 const UPI_ID = "9301152277@ybl";
 const WHATSAPP = "919301152277";
@@ -21,36 +28,44 @@ export default function OrderForm({ onClose }) {
   const [details, setDetails] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [servicesLoading, setServicesLoading] = useState(true);
 
+  // LIVE SERVICES FROM FIRESTORE
   useEffect(() => {
-    const loadServices = async () => {
-      try {
-        const q = query(
-          collection(db, "services"),
-          orderBy("createdAt", "desc")
-        );
+    const q = query(
+      collection(db, "services"),
+      orderBy("createdAt", "desc")
+    );
 
-        const snapshot = await getDocs(q);
-
-        const list = snapshot.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data()
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const list = snapshot.docs.map((item) => ({
+          id: item.id,
+          ...item.data()
         }));
 
-        setServices(list.filter(item => item.active !== false));
-      } catch (err) {
-        console.error("Services Error:", err);
-        setError("Services load nahi hui. Firebase check karein.");
-      }
-    };
+        setServices(
+          list.filter(item => item.active !== false)
+        );
 
-    loadServices();
+        setServicesLoading(false);
+      },
+      (err) => {
+        console.error("Services Error:", err);
+        setError("Services load nahi hui. Firebase Rules check karein.");
+        setServicesLoading(false);
+      }
+    );
+
+    return () => unsubscribe();
   }, []);
 
   const selected = services.find(
     item => item.id === selectedService
   );
 
+  // SUBMIT ORDER TO BOTH DATABASES
   const submitOrder = async (e) => {
     e.preventDefault();
     setError("");
@@ -73,35 +88,82 @@ export default function OrderForm({ onClose }) {
     setLoading(true);
 
     try {
+      const orderId = "PDS-" + Date.now();
+      const price = Number(selected.price) || 0;
+
       const orderData = {
+        orderId,
         customerName: name.trim(),
         name: name.trim(),
         mobile: mobile.trim(),
         service: selected.name,
         serviceId: selected.id,
-        price: Number(selected.price) || 0,
+        price,
         details: details.trim(),
         status: "Pending",
         paymentStatus: "Not Verified",
         createdAt: serverTimestamp()
       };
 
+      // 1. SAVE IN FIRESTORE
       const docRef = await addDoc(
         collection(db, "orders"),
         orderData
       );
 
+      // 2. SAVE SAME ORDER IN REALTIME DATABASE
+      let realtimeSaved = false;
+
+      try {
+        await set(
+          ref(rtdb, "orders/" + docRef.id),
+          {
+            ...orderData,
+            orderId: docRef.id,
+            firestoreId: docRef.id,
+            createdAt: Date.now(),
+            updatedAt: Date.now()
+          }
+        );
+
+        realtimeSaved = true;
+
+      } catch (realtimeError) {
+        console.error(
+          "Realtime Database Error:",
+          realtimeError
+        );
+      }
+
+      // 3. WHATSAPP MESSAGE
       const message =
         `New Order - Patel Digital Studio\n` +
         `Order ID: ${docRef.id}\n` +
-        `Name: ${name}\n` +
-        `Mobile: ${mobile}\n` +
+        `Name: ${name.trim()}\n` +
+        `Mobile: ${mobile.trim()}\n` +
         `Service: ${selected.name}\n` +
-        `Price: ₹${selected.price}\n` +
-        `Details: ${details}`;
+        `Price: Rs. ${price}\n` +
+        `Details: ${details.trim()}\n` +
+        `Status: Pending`;
 
-      alert("Order successfully submitted! Order ID: " + docRef.id);
+      // 4. SUCCESS MESSAGE
+      if (realtimeSaved) {
+        alert(
+          "Order successfully submitted!\n" +
+          "Firestore: Saved\n" +
+          "Realtime Database: Saved\n" +
+          "Order ID: " + docRef.id
+        );
+      } else {
+        alert(
+          "Order Firestore me save ho gaya!\n" +
+          "Realtime Database me save nahi hua.\n" +
+          "Admin ko live update ke liye Rules check karne honge.\n" +
+          "Order ID: " + docRef.id
+        );
+      }
 
+      // 5. OPEN WHATSAPP
       window.open(
         `https://wa.me/${WHATSAPP}?text=${encodeURIComponent(message)}`,
         "_blank"
@@ -116,9 +178,11 @@ export default function OrderForm({ onClose }) {
 
     } catch (err) {
       console.error("Order Submit Error:", err);
+
       setError(
-        "Order submit nahi hua. Firebase Firestore Rules aur connection check karein."
+        "Order submit nahi hua. Firestore Rules aur Firebase connection check karein."
       );
+
     } finally {
       setLoading(false);
     }
@@ -126,17 +190,25 @@ export default function OrderForm({ onClose }) {
 
   return (
     <div className="order-form">
+
       <h2>Place Your Order</h2>
 
       {error && (
-        <p style={{ color: "#ff5555" }}>{error}</p>
+        <p style={{ color: "#ff5555" }}>
+          {error}
+        </p>
       )}
 
-      {services.length === 0 && (
+      {servicesLoading && (
+        <p>Loading services...</p>
+      )}
+
+      {!servicesLoading && services.length === 0 && (
         <p>Abhi koi service available nahi hai.</p>
       )}
 
       <form onSubmit={submitOrder}>
+
         <input
           type="text"
           placeholder="Your Name"
@@ -170,8 +242,13 @@ export default function OrderForm({ onClose }) {
 
         {selected && (
           <div className="payment-section">
-            <h3>Service Price: ₹{selected.price}</h3>
+
+            <h3>
+              Service Price: ₹{Number(selected.price) || 0}
+            </h3>
+
             <h3>Scan & Pay</h3>
+
             <p>Payment Name: Patel Digital Studio</p>
             <p>UPI ID: {UPI_ID}</p>
 
@@ -185,8 +262,14 @@ export default function OrderForm({ onClose }) {
               }}
             />
 
-            <p>Payment karne ke baad Submit Order karein.</p>
-            <p>Payment verification Admin karega.</p>
+            <p>
+              Payment karne ke baad Submit Order karein.
+            </p>
+
+            <p>
+              Payment verification Admin karega.
+            </p>
+
           </div>
         )}
 
@@ -199,10 +282,11 @@ export default function OrderForm({ onClose }) {
 
         <button
           type="submit"
-          disabled={loading || services.length === 0}
+          disabled={loading || servicesLoading || services.length === 0}
         >
           {loading ? "Submitting..." : "Submit Order"}
         </button>
+
       </form>
     </div>
   );
