@@ -2,7 +2,6 @@
 import React, { useEffect, useState } from "react";
 import "./style.css";
 import CustomerLogin from "./CustomerLogin";
-
 import { auth, db } from "./firebase";
 
 import {
@@ -28,73 +27,33 @@ import {
 const DEFAULT_UPI = "9301152277@ybl";
 const DEFAULT_PAYMENT_NAME = "Patel Digital Studio";
 const WHATSAPP = "919301152277";
+const PHONE = "9301152277";
 
 const INITIAL_SERVICES = [
-  {
-    id: "pan",
-    name: "PAN Card Services",
-    category: "Government Services",
-    price: 199,
-    active: true
-  },
-  {
-    id: "banking",
-    name: "Banking Services",
-    category: "Banking",
-    price: 99,
-    active: true
-  },
-  {
-    id: "government",
-    name: "Government Services",
-    category: "Government",
-    price: 149,
-    active: true
-  },
-  {
-    id: "education",
-    name: "Education Services",
-    category: "Education",
-    price: 99,
-    active: true
-  },
-  {
-    id: "farmer",
-    name: "Farmer Services",
-    category: "Farmer",
-    price: 99,
-    active: true
-  },
-  {
-    id: "digital",
-    name: "Digital Services",
-    category: "Digital",
-    price: 99,
-    active: true
-  }
+  { id: "pan", name: "PAN Card Services", category: "Government Services", price: 199, active: true },
+  { id: "banking", name: "Banking Services", category: "Banking", price: 99, active: true },
+  { id: "government", name: "Government Services", category: "Government", price: 149, active: true },
+  { id: "education", name: "Education Services", category: "Education", price: 99, active: true },
+  { id: "farmer", name: "Farmer Services", category: "Farmer", price: 99, active: true },
+  { id: "digital", name: "Digital Services", category: "Digital", price: 99, active: true }
 ];
 
-function makeUpiLink(upiId, name, amount, orderId) {
+const money = (value) => "₹" + Number(value || 0).toFixed(2);
+
+function makeUpiLink(upi, name, amount, orderId) {
   const params = new URLSearchParams({
-    pa: upiId,
+    pa: upi,
     pn: name,
-    am: String(Number(amount || 0).toFixed(2)),
+    am: Number(amount || 0).toFixed(2),
     cu: "INR",
     tn: `PDS Order ${orderId || ""}`
   });
-
   return `upi://pay?${params.toString()}`;
 }
 
 function makeQrUrl(value) {
-  return (
-    "https://api.qrserver.com/v1/create-qr-code/" +
-    `?size=300x300&margin=12&data=${encodeURIComponent(value)}`
-  );
-}
-
-function money(value) {
-  return `₹${Number(value || 0).toFixed(2)}`;
+  return "https://api.qrserver.com/v1/create-qr-code/?size=300x300&margin=12&data=" +
+    encodeURIComponent(value);
 }
 
 export default function App() {
@@ -108,28 +67,25 @@ export default function App() {
 
   const [page, setPage] = useState("home");
   const [showLogin, setShowLogin] = useState(false);
+  const [showAdminLogin, setShowAdminLogin] = useState(false);
   const [pendingService, setPendingService] = useState(null);
 
   const [adminEmail, setAdminEmail] = useState("");
   const [adminPassword, setAdminPassword] = useState("");
-  const [showAdminLogin, setShowAdminLogin] = useState(false);
 
   const [newService, setNewService] = useState({
-    name: "",
-    category: "",
-    price: ""
+    name: "", category: "", price: ""
   });
 
   const [editId, setEditId] = useState(null);
   const [search, setSearch] = useState("");
-
   const [upiId, setUpiId] = useState(DEFAULT_UPI);
   const [paymentName, setPaymentName] = useState(DEFAULT_PAYMENT_NAME);
   const [paymentMessage, setPaymentMessage] = useState("");
-
   const [notice, setNotice] = useState("");
+  const [founderImageError, setFounderImageError] = useState(false);
 
-  // Firebase Authentication
+  // 1. Firebase Authentication and profile
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
@@ -142,8 +98,9 @@ export default function App() {
       }
 
       try {
-        const adminRef = doc(db, "admins", currentUser.uid);
-        const adminSnap = await getDoc(adminRef);
+        const adminSnap = await getDoc(
+          doc(db, "admins", currentUser.uid)
+        );
 
         if (adminSnap.exists() && adminSnap.data().active === true) {
           setIsAdmin(true);
@@ -151,17 +108,16 @@ export default function App() {
         } else {
           setIsAdmin(false);
 
-          const customerRef = doc(db, "customers", currentUser.uid);
-          const customerSnap = await getDoc(customerRef);
+          const customerSnap = await getDoc(
+            doc(db, "customers", currentUser.uid)
+          );
 
-          if (customerSnap.exists()) {
-            setCustomer(customerSnap.data());
-          } else {
-            setCustomer(null);
-          }
+          setCustomer(
+            customerSnap.exists() ? customerSnap.data() : null
+          );
         }
       } catch (error) {
-        console.error("Profile loading error:", error);
+        console.error("Profile error:", error);
         setNotice("Account details load nahi ho paye.");
       }
 
@@ -171,54 +127,60 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // Live Services from Firestore
+  // 2. Live services from Firestore
   useEffect(() => {
     const unsubscribe = onSnapshot(
       collection(db, "services"),
-      (snapshot) => {
+      async (snapshot) => {
         if (snapshot.empty) {
           setServices(INITIAL_SERVICES);
+
+          // First time admin login: save default services to Firestore
+          if (isAdmin) {
+            try {
+              await Promise.all(
+                INITIAL_SERVICES.map((service) =>
+                  setDoc(doc(db, "services", service.id), {
+                    ...service,
+                    createdAt: serverTimestamp()
+                  })
+                )
+              );
+            } catch (error) {
+              console.error("Default services error:", error);
+            }
+          }
           return;
         }
 
-        const list = snapshot.docs.map((item) => ({
-          id: item.id,
-          ...item.data()
-        }));
-
-        setServices(list);
+        setServices(
+          snapshot.docs.map((item) => ({
+            id: item.id,
+            ...item.data()
+          }))
+        );
       },
       (error) => {
-        console.error("Services error:", error);
-        setNotice("Services load nahi ho payi.");
+        console.error(error);
+        setNotice("Services load nahi ho payi. Firestore Rules check karein.");
       }
     );
 
     return () => unsubscribe();
-  }, []);
+  }, [isAdmin]);
 
-  // Live Orders: Admin sees all orders, customers see their own
+  // 3. Live orders: admin gets ALL orders, customer gets own orders
   useEffect(() => {
     if (!user) {
       setOrders([]);
       return;
     }
 
-    let ordersQuery;
+    const ordersRef = collection(db, "orders");
 
-    if (isAdmin) {
-      ordersQuery = collection(db, "orders");
-    } else {
-      if (!customer?.mobile) {
-        setOrders([]);
-        return;
-      }
-
-      ordersQuery = query(
-        collection(db, "orders"),
-        where("uid", "==", user.uid)
-      );
-    }
+    const ordersQuery = isAdmin
+      ? ordersRef
+      : query(ordersRef, where("uid", "==", user.uid));
 
     const unsubscribe = onSnapshot(
       ordersQuery,
@@ -228,24 +190,23 @@ export default function App() {
           ...item.data()
         }));
 
-        list.sort((a, b) => {
-          const aTime = a.createdAt?.seconds || 0;
-          const bTime = b.createdAt?.seconds || 0;
-          return bTime - aTime;
-        });
+        list.sort((a, b) =>
+          (b.createdAt?.seconds || 0) -
+          (a.createdAt?.seconds || 0)
+        );
 
         setOrders(list);
       },
       (error) => {
         console.error("Orders error:", error);
-        setNotice("Orders load nahi ho paye. Firestore Rules check karein.");
+        setNotice("Orders load nahi hue. Firestore Rules check karein.");
       }
     );
 
     return () => unsubscribe();
-  }, [user, isAdmin, customer]);
+  }, [user, isAdmin]);
 
-  // Payment Settings from Firestore
+  // 4. Live payment settings
   useEffect(() => {
     const unsubscribe = onSnapshot(
       doc(db, "settings", "payment"),
@@ -256,35 +217,32 @@ export default function App() {
           setPaymentName(data.paymentName || DEFAULT_PAYMENT_NAME);
         }
       },
-      (error) => {
-        console.error("Payment settings error:", error);
-      }
+      (error) => console.error("Payment settings:", error)
     );
 
     return () => unsubscribe();
   }, []);
 
   function whatsapp(message) {
-    const url = `https://wa.me/${WHATSAPP}?text=${encodeURIComponent(message)}`;
-    window.open(url, "_blank");
+    window.open(
+      `https://wa.me/${WHATSAPP}?text=${encodeURIComponent(message)}`,
+      "_blank"
+    );
   }
 
+  // 5. Customer login callback
   async function handleCustomerLogin(data) {
     const currentUser = auth.currentUser;
 
     if (!currentUser) {
-      setNotice("Login complete hone ka intezar karein.");
+      setNotice("Customer login complete nahi hua.");
       return;
     }
 
-    const name = data?.name || data?.fullName || "";
-    const mobile =
-      data?.mobile || data?.phone || data?.phoneNumber || "";
-
     const profile = {
       uid: currentUser.uid,
-      name,
-      mobile,
+      name: data?.name || data?.fullName || "",
+      mobile: data?.mobile || data?.phone || data?.phoneNumber || "",
       updatedAt: serverTimestamp()
     };
 
@@ -295,29 +253,24 @@ export default function App() {
         { merge: true }
       );
 
-      setCustomer({ ...profile, name, mobile });
+      setUser(currentUser);
+      setCustomer(profile);
       setShowLogin(false);
-      setNotice("Login successful!");
+      setNotice("Customer login successful!");
 
       if (pendingService) {
-        await createOrder(pendingService, {
-          name,
-          mobile,
-          uid: currentUser.uid
-        });
+        await createOrder(pendingService, profile);
         setPendingService(null);
       }
     } catch (error) {
       console.error(error);
-      setNotice("Customer profile save nahi ho payi.");
+      setNotice("Customer profile save nahi hui.");
     }
   }
 
   async function customerLogout() {
     try {
       await signOut(auth);
-      setCustomer(null);
-      setIsAdmin(false);
       setPage("home");
       setNotice("Logout successful.");
     } catch (error) {
@@ -325,16 +278,24 @@ export default function App() {
     }
   }
 
+  // 6. Create order using current Firebase user
   async function createOrder(service, profile = customer) {
-    if (!user || !profile) {
+    const currentUser = auth.currentUser;
+
+    if (!currentUser || !profile) {
       setPendingService(service);
       setShowLogin(true);
       return;
     }
 
+    if (!profile.mobile) {
+      setNotice("Customer mobile number profile mein nahi mila.");
+      return;
+    }
+
     try {
       const orderData = {
-        uid: user.uid,
+        uid: currentUser.uid,
         customerName: profile.name || "",
         mobile: profile.mobile || "",
         serviceName: service.name,
@@ -347,10 +308,13 @@ export default function App() {
         createdAt: serverTimestamp()
       };
 
-      const orderRef = await addDoc(collection(db, "orders"), orderData);
+      const orderRef = await addDoc(
+        collection(db, "orders"),
+        orderData
+      );
 
       setPage("account");
-      setNotice(`Order placed successfully: ${orderRef.id}`);
+      setNotice("Order successfully place ho gaya!");
 
       whatsapp(
         `New Order - Patel Digital Studio\n` +
@@ -362,10 +326,11 @@ export default function App() {
       );
     } catch (error) {
       console.error(error);
-      setNotice("Order save nahi hua. Firebase Rules check karein.");
+      setNotice("Order save nahi hua. Firestore Rules check karein.");
     }
   }
 
+  // 7. Admin authentication
   async function adminSignIn(event) {
     event.preventDefault();
 
@@ -388,8 +353,9 @@ export default function App() {
 
       setShowAdminLogin(false);
       setAdminPassword("");
+      setIsAdmin(true);
       setPage("admin");
-      setNotice("Admin login successful.");
+      setNotice("Admin login successful!");
     } catch (error) {
       console.error(error);
       setNotice("Admin Email ya Password galat hai.");
@@ -397,18 +363,21 @@ export default function App() {
   }
 
   async function adminLogout() {
-    await signOut(auth);
-    setPage("home");
-    setIsAdmin(false);
-    setNotice("Admin logout successful.");
+    try {
+      await signOut(auth);
+      setPage("home");
+      setNotice("Admin logout successful.");
+    } catch (error) {
+      setNotice(error.message);
+    }
   }
 
+  // 8. Add or edit service
   async function saveService(event) {
     event.preventDefault();
-
     if (!isAdmin) return;
 
-    const serviceData = {
+    const data = {
       name: newService.name.trim(),
       category: newService.category.trim(),
       price: Number(newService.price),
@@ -416,18 +385,18 @@ export default function App() {
       updatedAt: serverTimestamp()
     };
 
-    if (!serviceData.name || !serviceData.category || serviceData.price <= 0) {
+    if (!data.name || !data.category || !Number.isFinite(data.price) || data.price <= 0) {
       setNotice("Service ki details sahi bharein.");
       return;
     }
 
     try {
       if (editId) {
-        await updateDoc(doc(db, "services", editId), serviceData);
+        await updateDoc(doc(db, "services", editId), data);
         setNotice("Service update ho gayi.");
       } else {
         await addDoc(collection(db, "services"), {
-          ...serviceData,
+          ...data,
           createdAt: serverTimestamp()
         });
         setNotice("New service add ho gayi.");
@@ -437,7 +406,7 @@ export default function App() {
       setEditId(null);
     } catch (error) {
       console.error(error);
-      setNotice("Service save nahi hui. Firebase Rules check karein.");
+      setNotice("Service save nahi hui. Rules check karein.");
     }
   }
 
@@ -447,17 +416,13 @@ export default function App() {
       category: service.category || "",
       price: String(service.price || "")
     });
-
     setEditId(service.id);
     setPage("admin");
   }
 
   async function removeService(id) {
     if (!isAdmin) return;
-
-    if (!window.confirm("Kya aap is service ko delete karna chahte hain?")) {
-      return;
-    }
+    if (!window.confirm("Kya aap is service ko delete karna chahte hain?")) return;
 
     try {
       await deleteDoc(doc(db, "services", id));
@@ -468,6 +433,7 @@ export default function App() {
     }
   }
 
+  // 9. Update customer order
   async function updateOrder(id, changes) {
     if (!isAdmin) return;
 
@@ -476,21 +442,20 @@ export default function App() {
         ...changes,
         updatedAt: serverTimestamp()
       });
-
       setNotice("Order update ho gaya.");
     } catch (error) {
       console.error(error);
-      setNotice("Order update nahi hua.");
+      setNotice("Order update nahi hua. Rules check karein.");
     }
   }
 
+  // 10. Save UPI settings
   async function savePaymentSettings(event) {
     event.preventDefault();
-
     if (!isAdmin) return;
 
     if (!upiId.trim() || !paymentName.trim()) {
-      setPaymentMessage("UPI ID aur Payment Name dono bharein.");
+      setPaymentMessage("UPI ID aur Payment Name bharein.");
       return;
     }
 
@@ -513,9 +478,13 @@ export default function App() {
     }
   }
 
-  const activeServices = services.filter((service) => service.active !== false);
+  const activeServices = services.filter(
+    (service) => service.active !== false
+  );
 
-  const myOrders = orders.filter((order) => order.uid === user?.uid);
+  const myOrders = orders.filter(
+    (order) => order.uid === user?.uid
+  );
 
   const totalRevenue = orders
     .filter((order) => order.paymentStatus === "Paid")
@@ -543,112 +512,45 @@ export default function App() {
   return (
     <div className="pds-app">
       <style>{`
-        .pds-app {
-          min-height:100vh;
-          background:#080808;
-          color:#f5f1e8;
-          font-family:Arial,sans-serif;
-        }
-        .pds-app * { box-sizing:border-box; }
-        .pds-header {
-          background:#101010;
-          border-bottom:1px solid #b58b37;
-          padding:15px 5%;
-          display:flex;
-          align-items:center;
-          justify-content:space-between;
-          flex-wrap:wrap;
-          gap:14px;
-          position:sticky;
-          top:0;
-          z-index:20;
-        }
-        .pds-brand {display:flex;align-items:center;gap:12px}
-        .pds-logo {
-          width:48px;height:48px;border:2px solid #c69b43;
-          border-radius:12px;display:grid;place-items:center;
-          color:#e6bd65;font-size:23px;font-weight:bold;
-        }
-        .pds-brand h2 {margin:0;color:#e5bd67;font-size:17px}
-        .pds-brand small {color:#aaa;font-size:10px;letter-spacing:2px}
-        .pds-nav {display:flex;gap:8px;flex-wrap:wrap}
-        .pds-app button {
-          cursor:pointer;border:1px solid #bd9343;
-          background:#bd9343;color:#080808;
-          border-radius:7px;padding:10px 14px;font-weight:bold;
-        }
-        .pds-app button.secondary {
-          background:transparent;color:#e7c16f;
-        }
-        .pds-app button.danger {
-          background:#8e2929;border-color:#8e2929;color:white;
-        }
-        .pds-app button:disabled {opacity:.5;cursor:not-allowed}
-        .pds-container {max-width:1150px;margin:auto;padding:28px 18px}
-        .pds-hero {
-          min-height:380px;display:flex;align-items:center;
-          justify-content:center;text-align:center;padding:55px 18px;
-          background:radial-gradient(ellipse at center,#292012 0%,#080808 70%);
-        }
-        .pds-hero h1 {font-size:clamp(30px,6vw,55px);color:#e7c16f;margin:0 0 14px}
-        .pds-hero p {color:#ccc;line-height:1.7}
-        .pds-section-title {color:#e7c16f;text-align:center;margin:12px 0 25px}
-        .pds-grid {display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}
-        .pds-card {
-          background:#141414;border:1px solid #49391f;border-radius:12px;
-          padding:19px;box-shadow:0 5px 20px #0005;
-        }
-        .pds-card h3 {color:#e7c16f;margin-top:0}
-        .pds-price {font-size:23px;color:#fff;margin:15px 0}
-        .pds-muted {color:#aaa;font-size:13px;line-height:1.6}
-        .pds-about {display:flex;gap:25px;align-items:center;flex-wrap:wrap}
-        .pds-founder {
-          width:170px;height:190px;object-fit:cover;
-          border-radius:12px;border:2px solid #bd9343;
-        }
-        .pds-form {display:grid;gap:12px}
-        .pds-app input,.pds-app select,.pds-app textarea {
-          width:100%;padding:12px;border:1px solid #62502e;
-          background:#090909;color:white;border-radius:7px;
-        }
-        .pds-app label {color:#e7c16f;font-size:13px}
-        .pds-table-wrap {overflow-x:auto}
-        .pds-table {width:100%;border-collapse:collapse;min-width:650px}
-        .pds-table th,.pds-table td {
-          padding:11px;border-bottom:1px solid #393027;text-align:left;
-          font-size:13px;
-        }
-        .pds-table th {color:#e7c16f}
-        .pds-status {color:#e7c16f;font-weight:bold}
-        .pds-qr {
-          display:block;width:250px;height:250px;max-width:100%;
-          background:white;padding:8px;border-radius:10px;margin:15px auto;
-        }
-        .pds-payment {text-align:center;border:1px solid #80632e;
-          background:#17130c;border-radius:12px;padding:18px;margin-top:18px}
-        .pds-footer {
-          text-align:center;padding:28px 15px;border-top:1px solid #72572a;
-          color:#aaa;background:#101010;margin-top:40px;
-        }
-        .pds-notice {
-          position:fixed;bottom:20px;left:50%;transform:translateX(-50%);
-          z-index:50;background:#e7c16f;color:#111;padding:12px 18px;
-          border-radius:8px;max-width:90%;font-size:13px;
-          box-shadow:0 5px 20px #0008;
-        }
-        .pds-wa {
-          position:fixed;right:18px;bottom:18px;z-index:30;
-          border-radius:50%!important;width:55px;height:55px;
-          font-size:21px;padding:0!important;
-        }
-        .pds-loading {min-height:100vh;background:#080808;color:#e7c16f;
-          display:grid;place-content:center;text-align:center}
-        @media(max-width:600px) {
-          .pds-header {justify-content:center}
-          .pds-nav {justify-content:center}
-          .pds-nav button {font-size:11px;padding:9px}
-          .pds-container {padding:22px 13px}
-        }
+        .pds-app{min-height:100vh;background:#080808;color:#f5f1e8;font-family:Arial,sans-serif}
+        .pds-app *{box-sizing:border-box}
+        .pds-header{background:#101010;border-bottom:1px solid #b58b37;padding:15px 5%;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:14px;position:sticky;top:0;z-index:20}
+        .pds-brand{display:flex;align-items:center;gap:12px}
+        .pds-logo{width:48px;height:48px;border:2px solid #c69b43;border-radius:12px;display:grid;place-items:center;color:#e6bd65;font-size:23px;font-weight:bold}
+        .pds-brand h2{margin:0;color:#e5bd67;font-size:17px}
+        .pds-brand small{color:#aaa;font-size:10px;letter-spacing:2px}
+        .pds-nav{display:flex;gap:8px;flex-wrap:wrap}
+        .pds-app button{cursor:pointer;border:1px solid #bd9343;background:#bd9343;color:#080808;border-radius:7px;padding:10px 14px;font-weight:bold}
+        .pds-app button.secondary{background:transparent;color:#e7c16f}
+        .pds-app button.danger{background:#8e2929;border-color:#8e2929;color:white}
+        .pds-container{max-width:1150px;margin:auto;padding:28px 18px}
+        .pds-hero{min-height:380px;display:flex;align-items:center;justify-content:center;text-align:center;padding:55px 18px;background:radial-gradient(ellipse at center,#292012 0%,#080808 70%)}
+        .pds-hero h1{font-size:clamp(30px,6vw,55px);color:#e7c16f;margin:0 0 14px}
+        .pds-hero p{color:#ccc;line-height:1.7}
+        .pds-section-title{color:#e7c16f;text-align:center;margin:12px 0 25px}
+        .pds-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}
+        .pds-card{background:#141414;border:1px solid #49391f;border-radius:12px;padding:19px;box-shadow:0 5px 20px #0005}
+        .pds-card h3{color:#e7c16f;margin-top:0}
+        .pds-price{font-size:23px;color:#fff;margin:15px 0}
+        .pds-muted{color:#aaa;font-size:13px;line-height:1.6}
+        .pds-about{display:flex;gap:25px;align-items:center;flex-wrap:wrap}
+        .pds-founder{width:170px;height:190px;object-fit:cover;border-radius:12px;border:2px solid #bd9343;display:block}
+        .pds-founder-fallback{width:170px;height:190px;border:2px solid #bd9343;border-radius:12px;display:grid;place-items:center;background:#21190d;color:#e7c16f;font-size:45px;font-weight:bold}
+        .pds-form{display:grid;gap:12px}
+        .pds-app input,.pds-app select,.pds-app textarea{width:100%;padding:12px;border:1px solid #62502e;background:#090909;color:white;border-radius:7px}
+        .pds-app label{color:#e7c16f;font-size:13px}
+        .pds-table-wrap{overflow-x:auto}
+        .pds-table{width:100%;border-collapse:collapse;min-width:650px}
+        .pds-table th,.pds-table td{padding:11px;border-bottom:1px solid #393027;text-align:left;font-size:13px}
+        .pds-table th{color:#e7c16f}
+        .pds-status{color:#e7c16f;font-weight:bold}
+        .pds-qr{display:block;width:250px;height:250px;max-width:100%;background:white;padding:8px;border-radius:10px;margin:15px auto}
+        .pds-payment{text-align:center;border:1px solid #80632e;background:#17130c;border-radius:12px;padding:18px;margin-top:18px}
+        .pds-footer{text-align:center;padding:28px 15px;border-top:1px solid #72572a;color:#aaa;background:#101010;margin-top:40px}
+        .pds-notice{position:fixed;bottom:85px;left:50%;transform:translateX(-50%);z-index:110;background:#e7c16f;color:#111;padding:12px 18px;border-radius:8px;max-width:90%;font-size:13px;box-shadow:0 5px 20px #0008;cursor:pointer}
+        .pds-wa{position:fixed;right:18px;bottom:18px;z-index:30;border-radius:50%!important;width:55px;height:55px;font-size:18px;padding:0!important}
+        .pds-loading{min-height:100vh;background:#080808;color:#e7c16f;display:grid;place-content:center;text-align:center}
+        @media(max-width:600px){.pds-header{justify-content:center}.pds-nav{justify-content:center}.pds-nav button{font-size:11px;padding:9px}.pds-container{padding:22px 13px}}
       `}</style>
 
       <header className="pds-header">
@@ -665,9 +567,7 @@ export default function App() {
           <button className="secondary" onClick={() => setPage("services")}>Services</button>
 
           {user && !isAdmin && (
-            <button className="secondary" onClick={() => setPage("account")}>
-              My Account
-            </button>
+            <button className="secondary" onClick={() => setPage("account")}>My Account</button>
           )}
 
           {isAdmin ? (
@@ -679,12 +579,8 @@ export default function App() {
             <button className="danger" onClick={customerLogout}>Logout</button>
           ) : (
             <>
-              <button className="secondary" onClick={() => setShowLogin(true)}>
-                Customer Login
-              </button>
-              <button onClick={() => setShowAdminLogin(true)}>
-                Admin Login
-              </button>
+              <button className="secondary" onClick={() => setShowLogin(true)}>Customer Login</button>
+              <button onClick={() => setShowAdminLogin(true)}>Admin Login</button>
             </>
           )}
         </nav>
@@ -707,10 +603,8 @@ export default function App() {
                 Government, Banking, Education and Digital Services.
               </p>
               <button onClick={() => setPage("services")}>Explore Services</button>
-              &nbsp;
-              <button className="secondary" onClick={() => whatsapp("Hello Patel Digital Studio, mujhe services ki jankari chahiye.")}>
-                Contact Us
-              </button>
+              {" "}
+              <button className="secondary" onClick={() => whatsapp("Hello Patel Digital Studio, mujhe services ki jankari chahiye.")}>Contact Us</button>
             </div>
           </section>
 
@@ -727,35 +621,35 @@ export default function App() {
               ))}
             </div>
             <div style={{textAlign:"center",marginTop:25}}>
-              <button className="secondary" onClick={() => setPage("services")}>
-                View All Services
-              </button>
+              <button className="secondary" onClick={() => setPage("services")}>View All Services</button>
             </div>
           </section>
 
           <section className="pds-container">
             <h2 className="pds-section-title">ABOUT US</h2>
             <div className="pds-card pds-about">
-              <img
-                src="/founder.png"
-                alt="Founder Mohan Patel"
-                className="pds-founder"
-                onError={(event) => {
-                  event.currentTarget.style.display = "none";
-                }}
-              />
+              {!founderImageError ? (
+                <img
+                  src="/founder.png"
+                  alt="Founder Mohan Patel"
+                  className="pds-founder"
+                  onError={() => setFounderImageError(true)}
+                />
+              ) : (
+                <div className="pds-founder-fallback">MP</div>
+              )}
+
               <div style={{flex:1,minWidth:220}}>
                 <h2 style={{color:"#e7c16f"}}>Mohan Patel</h2>
                 <h3>Founder - Patel Digital Studio</h3>
                 <p className="pds-muted">
-                  Patel Digital Studio ka uddeshya customers ko
-                  reliable online digital services aasani se uplabdh karana hai.
-                  Hum Government, Banking, Education aur Digital Services
-                  mein sahayata pradan karte hain.
+                  Patel Digital Studio ka uddeshya customers ko reliable online
+                  digital services aasani se uplabdh karana hai. Hum Government,
+                  Banking, Education aur Digital Services mein sahayata pradan karte hain.
                 </p>
-                <button onClick={() => whatsapp("Hello, mujhe Patel Digital Studio se sampark karna hai.")}>
-                  Contact Founder
-                </button>
+                <button onClick={() => whatsapp("Hello, mujhe Patel Digital Studio se sampark karna hai.")}>Contact Founder</button>
+                {" "}
+                <button className="secondary" onClick={() => window.location.href = `tel:${PHONE}`}>Call Now</button>
               </div>
             </div>
           </section>
@@ -765,14 +659,12 @@ export default function App() {
       {page === "services" && (
         <main className="pds-container">
           <h2 className="pds-section-title">ALL SERVICES</h2>
-
           <input
             placeholder="Search services..."
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             style={{marginBottom:20}}
           />
-
           <div className="pds-grid">
             {filteredServices.map((service) => (
               <div className="pds-card" key={service.id}>
@@ -780,16 +672,12 @@ export default function App() {
                 <p className="pds-muted">{service.category}</p>
                 <div className="pds-price">{money(service.price)}</div>
                 <button onClick={() => createOrder(service)}>Order Now</button>
-                &nbsp;
-                <button
-                  className="secondary"
-                  onClick={() => whatsapp(`Hello, mujhe ${service.name} ke baare mein jankari chahiye.`)}
-                >
-                  Enquire
-                </button>
+                {" "}
+                <button className="secondary" onClick={() => whatsapp(`Hello, mujhe ${service.name} ke baare mein jankari chahiye.`)}>Enquire</button>
               </div>
             ))}
           </div>
+          {filteredServices.length === 0 && <p className="pds-muted">Koi service nahi mili.</p>}
         </main>
       )}
 
@@ -819,59 +707,28 @@ export default function App() {
               ) : (
                 <div className="pds-grid">
                   {myOrders.map((order) => {
-                    const upiLink = makeUpiLink(
-                      upiId,
-                      paymentName,
-                      order.price,
-                      order.id
-                    );
-
-                    const qrUrl = makeQrUrl(upiLink);
-
+                    const upiLink = makeUpiLink(upiId, paymentName, order.price, order.id);
                     return (
                       <div className="pds-card" key={order.id}>
                         <h3>{order.serviceName}</h3>
                         <p className="pds-muted">Order ID: {order.id}</p>
                         <div className="pds-price">{money(order.price)}</div>
                         <p>Status: <span className="pds-status">{order.status}</span></p>
-                        <p>
-                          Payment:{" "}
-                          <span className="pds-status">{order.paymentStatus}</span>
-                        </p>
+                        <p>Payment: <span className="pds-status">{order.paymentStatus}</span></p>
 
                         {order.paymentStatus !== "Paid" && (
                           <div className="pds-payment">
                             <h3>Scan & Pay</h3>
-                            <p className="pds-muted">
-                              UPI ID: {upiId}
-                            </p>
-                            <img
-                              className="pds-qr"
-                              src={qrUrl}
-                              alt="UPI Payment QR Code"
-                            />
+                            <p className="pds-muted">UPI ID: {upiId}</p>
+                            <img className="pds-qr" src={makeQrUrl(upiLink)} alt="UPI Payment QR Code" />
                             <p><b>Amount: {money(order.price)}</b></p>
-                            <button onClick={() => window.open(upiLink, "_self")}>
-                              Pay with UPI App
-                            </button>
+                            <button onClick={() => window.location.href = upiLink}>Pay with UPI App</button>
                             <p className="pds-muted">
-                              Payment karne ke baad apna UPI Transaction ID
-                              WhatsApp par bhejein.
+                              Payment karne ke baad transaction ID WhatsApp par bhejein.
                             </p>
-                            <button
-                              className="secondary"
-                              onClick={() =>
-                                whatsapp(
-                                  `Payment Done - Patel Digital Studio\n` +
-                                  `Order ID: ${order.id}\n` +
-                                  `Service: ${order.serviceName}\n` +
-                                  `Amount: ${money(order.price)}\n` +
-                                  `Transaction ID: `
-                                )
-                              }
-                            >
-                              Send Payment Details
-                            </button>
+                            <button className="secondary" onClick={() => whatsapp(
+                              `Payment Done - Patel Digital Studio\nOrder ID: ${order.id}\nService: ${order.serviceName}\nAmount: ${money(order.price)}\nTransaction ID: `
+                            )}>Send Payment Details</button>
                           </div>
                         )}
                       </div>
@@ -889,73 +746,28 @@ export default function App() {
           <h2 className="pds-section-title">ADMIN DASHBOARD</h2>
 
           <div className="pds-grid">
-            <div className="pds-card">
-              <p className="pds-muted">Total Orders</p>
-              <h2>{orders.length}</h2>
-            </div>
-            <div className="pds-card">
-              <p className="pds-muted">Paid Revenue</p>
-              <h2 style={{color:"#e7c16f"}}>{money(totalRevenue)}</h2>
-            </div>
-            <div className="pds-card">
-              <p className="pds-muted">Pending Payments</p>
-              <h2>{money(pendingPayments)}</h2>
-            </div>
-            <div className="pds-card">
-              <p className="pds-muted">Active Services</p>
-              <h2>{activeServices.length}</h2>
-            </div>
+            <div className="pds-card"><p className="pds-muted">Total Orders</p><h2>{orders.length}</h2></div>
+            <div className="pds-card"><p className="pds-muted">Paid Revenue</p><h2 style={{color:"#e7c16f"}}>{money(totalRevenue)}</h2></div>
+            <div className="pds-card"><p className="pds-muted">Pending Payments</p><h2>{money(pendingPayments)}</h2></div>
+            <div className="pds-card"><p className="pds-muted">Active Services</p><h2>{activeServices.length}</h2></div>
           </div>
 
           <section className="pds-card" style={{marginTop:22}}>
             <h3>{editId ? "Edit Service" : "Add New Service"}</h3>
-
             <form className="pds-form" onSubmit={saveService}>
               <label>Service Name</label>
-              <input
-                required
-                value={newService.name}
-                onChange={(event) =>
-                  setNewService({...newService,name:event.target.value})
-                }
-                placeholder="Example: PAN Card Services"
-              />
-
+              <input required value={newService.name} onChange={(e) => setNewService({...newService,name:e.target.value})} placeholder="PAN Card Services" />
               <label>Category</label>
-              <input
-                required
-                value={newService.category}
-                onChange={(event) =>
-                  setNewService({...newService,category:event.target.value})
-                }
-                placeholder="Government Services"
-              />
-
+              <input required value={newService.category} onChange={(e) => setNewService({...newService,category:e.target.value})} placeholder="Government Services" />
               <label>Price (₹)</label>
-              <input
-                required
-                type="number"
-                min="1"
-                value={newService.price}
-                onChange={(event) =>
-                  setNewService({...newService,price:event.target.value})
-                }
-                placeholder="199"
-              />
-
+              <input required type="number" min="1" value={newService.price} onChange={(e) => setNewService({...newService,price:e.target.value})} placeholder="199" />
               <div>
                 <button type="submit">{editId ? "Update Service" : "Add Service"}</button>
                 {editId && (
-                  <button
-                    type="button"
-                    className="secondary"
-                    onClick={() => {
-                      setEditId(null);
-                      setNewService({name:"",category:"",price:""});
-                    }}
-                  >
-                    Cancel
-                  </button>
+                  <button type="button" className="secondary" onClick={() => {
+                    setEditId(null);
+                    setNewService({name:"",category:"",price:""});
+                  }}>Cancel</button>
                 )}
               </div>
             </form>
@@ -965,14 +777,7 @@ export default function App() {
             <h3>Manage Services</h3>
             <div className="pds-table-wrap">
               <table className="pds-table">
-                <thead>
-                  <tr>
-                    <th>Service</th>
-                    <th>Category</th>
-                    <th>Price</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
+                <thead><tr><th>Service</th><th>Category</th><th>Price</th><th>Actions</th></tr></thead>
                 <tbody>
                   {services.map((service) => (
                     <tr key={service.id}>
@@ -980,11 +785,8 @@ export default function App() {
                       <td>{service.category}</td>
                       <td>{money(service.price)}</td>
                       <td>
-                        <button onClick={() => startEditService(service)}>Edit</button>
-                        {" "}
-                        <button className="danger" onClick={() => removeService(service.id)}>
-                          Delete
-                        </button>
+                        <button onClick={() => startEditService(service)}>Edit</button>{" "}
+                        <button className="danger" onClick={() => removeService(service.id)}>Delete</button>
                       </td>
                     </tr>
                   ))}
@@ -995,21 +797,14 @@ export default function App() {
 
           <section className="pds-card" style={{marginTop:22}}>
             <h3>All Customer Orders</h3>
-
             <div className="pds-table-wrap">
               <table className="pds-table">
                 <thead>
                   <tr>
-                    <th>Customer</th>
-                    <th>Mobile</th>
-                    <th>Service</th>
-                    <th>Amount</th>
-                    <th>Order Status</th>
-                    <th>Payment Status</th>
-                    <th>Transaction ID</th>
+                    <th>Customer</th><th>Mobile</th><th>Service</th><th>Amount</th>
+                    <th>Order Status</th><th>Payment Status</th><th>Transaction ID</th>
                   </tr>
                 </thead>
-
                 <tbody>
                   {orders.map((order) => (
                     <tr key={order.id}>
@@ -1018,39 +813,22 @@ export default function App() {
                       <td>{order.serviceName}</td>
                       <td>{money(order.price)}</td>
                       <td>
-                        <select
-                          value={order.status || "Pending"}
-                          onChange={(event) =>
-                            updateOrder(order.id,{status:event.target.value})
-                          }
-                        >
-                          <option>Pending</option>
-                          <option>Processing</option>
-                          <option>Completed</option>
-                          <option>Rejected</option>
+                        <select value={order.status || "Pending"} onChange={(e) => updateOrder(order.id,{status:e.target.value})}>
+                          <option>Pending</option><option>Processing</option><option>Completed</option><option>Rejected</option>
                         </select>
                       </td>
                       <td>
-                        <select
-                          value={order.paymentStatus || "Unpaid"}
-                          onChange={(event) =>
-                            updateOrder(order.id,{paymentStatus:event.target.value})
-                          }
-                        >
-                          <option>Unpaid</option>
-                          <option>Paid</option>
-                          <option>Refunded</option>
+                        <select value={order.paymentStatus || "Unpaid"} onChange={(e) => updateOrder(order.id,{paymentStatus:e.target.value})}>
+                          <option>Unpaid</option><option>Paid</option><option>Refunded</option>
                         </select>
                       </td>
                       <td>
                         <input
                           defaultValue={order.transactionId || ""}
                           placeholder="Transaction ID"
-                          onBlur={(event) => {
-                            if (event.target.value !== (order.transactionId || "")) {
-                              updateOrder(order.id,{
-                                transactionId:event.target.value
-                              });
+                          onBlur={(e) => {
+                            if (e.target.value !== (order.transactionId || "")) {
+                              updateOrder(order.id,{transactionId:e.target.value});
                             }
                           }}
                         />
@@ -1060,49 +838,24 @@ export default function App() {
                 </tbody>
               </table>
             </div>
-
-            {orders.length === 0 && (
-              <p className="pds-muted">Abhi koi customer order nahi aaya hai.</p>
-            )}
+            {orders.length === 0 && <p className="pds-muted">Abhi koi customer order nahi aaya hai.</p>}
           </section>
 
           <section className="pds-card" style={{marginTop:22}}>
             <h3>Payment Management</h3>
-
             <form className="pds-form" onSubmit={savePaymentSettings}>
               <label>UPI ID</label>
-              <input
-                value={upiId}
-                onChange={(event) => setUpiId(event.target.value)}
-                placeholder="9301152277@ybl"
-                required
-              />
-
+              <input value={upiId} onChange={(e) => setUpiId(e.target.value)} required />
               <label>Payment Name</label>
-              <input
-                value={paymentName}
-                onChange={(event) => setPaymentName(event.target.value)}
-                placeholder="Patel Digital Studio"
-                required
-              />
-
+              <input value={paymentName} onChange={(e) => setPaymentName(e.target.value)} required />
               <button type="submit">Save Payment Settings</button>
-              {paymentMessage && (
-                <p className="pds-muted">{paymentMessage}</p>
-              )}
+              {paymentMessage && <p className="pds-muted">{paymentMessage}</p>}
             </form>
-
             <div className="pds-payment">
               <h3>Payment QR Preview</h3>
               <p className="pds-muted">UPI ID: {upiId}</p>
-              <img
-                className="pds-qr"
-                src={makeQrUrl(makeUpiLink(upiId,paymentName,1,"PDS"))}
-                alt="Payment QR Preview"
-              />
-              <p className="pds-muted">
-                Customer ke order mein QR actual order amount ke saath banega.
-              </p>
+              <img className="pds-qr" src={makeQrUrl(makeUpiLink(upiId,paymentName,1,"PDS"))} alt="Payment QR Preview" />
+              <p className="pds-muted">Customer order ka QR actual amount ke saath banega.</p>
             </div>
           </section>
         </main>
@@ -1120,17 +873,11 @@ export default function App() {
       <footer className="pds-footer">
         <h3 style={{color:"#e7c16f"}}>PD | PATEL DIGITAL STUDIO</h3>
         <p>SMART DIGITAL SOLUTIONS</p>
-        <p>Contact: 9301152277</p>
+        <p>Contact: {PHONE}</p>
         <p>© {new Date().getFullYear()} Patel Digital Studio. All Rights Reserved.</p>
       </footer>
 
-      <button
-        className="pds-wa"
-        title="WhatsApp"
-        onClick={() => whatsapp("Hello Patel Digital Studio")}
-      >
-        WA
-      </button>
+      <button className="pds-wa" title="WhatsApp" onClick={() => whatsapp("Hello Patel Digital Studio")}>WA</button>
 
       {showLogin && (
         <CustomerLogin
@@ -1143,47 +890,19 @@ export default function App() {
       )}
 
       {showAdminLogin && (
-        <div
-          style={{
-            position:"fixed",
-            inset:0,
-            zIndex:100,
-            background:"#000d",
-            display:"grid",
-            placeItems:"center",
-            padding:18
-          }}
-        >
+        <div style={{
+          position:"fixed",inset:0,zIndex:100,background:"#000d",
+          display:"grid",placeItems:"center",padding:18
+        }}>
           <div className="pds-card" style={{width:"100%",maxWidth:420}}>
             <h2 style={{color:"#e7c16f"}}>Admin Login</h2>
-
             <form className="pds-form" onSubmit={adminSignIn}>
               <label>Admin Email</label>
-              <input
-                type="email"
-                required
-                value={adminEmail}
-                onChange={(event) => setAdminEmail(event.target.value)}
-                placeholder="Admin Email"
-              />
-
+              <input type="email" required value={adminEmail} onChange={(e) => setAdminEmail(e.target.value)} placeholder="Admin Email" />
               <label>Password</label>
-              <input
-                type="password"
-                required
-                value={adminPassword}
-                onChange={(event) => setAdminPassword(event.target.value)}
-                placeholder="Admin Password"
-              />
-
+              <input type="password" required value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} placeholder="Admin Password" />
               <button type="submit">Login</button>
-              <button
-                type="button"
-                className="secondary"
-                onClick={() => setShowAdminLogin(false)}
-              >
-                Close
-              </button>
+              <button type="button" className="secondary" onClick={() => setShowAdminLogin(false)}>Close</button>
             </form>
           </div>
         </div>
