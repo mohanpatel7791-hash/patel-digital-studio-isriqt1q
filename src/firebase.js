@@ -1,10 +1,14 @@
 
-import { initializeApp } from "firebase/app";
-import { getFirestore } from "firebase/firestore";
+import { initializeApp, getApps, getApp } from "firebase/app";
+
 import { getAuth } from "firebase/auth";
 
+import { getFirestore } from "firebase/firestore";
+
+import { getDatabase } from "firebase/database";
+
 const firebaseConfig = {
-  apiKey: "AIzaSyBjuCR-PRTnEy6ZwTzziBfPPoUX8CW0Jlc",
+  apiKey: "YOUR_EXISTING_API_KEY",
   authDomain: "patel-digital-studio.firebaseapp.com",
   databaseURL: "https://patel-digital-studio-default-rtdb.firebaseio.com",
   projectId: "patel-digital-studio",
@@ -14,8 +18,16 @@ const firebaseConfig = {
   measurementId: "G-4HSWHQMSY7"
 };
 
-const app = initializeApp(firebaseConfig);
+const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
 
-export const db = getFirestore(app);
+// Firebase Authentication
 export const auth = getAuth(app);
-        
+
+// Cloud Firestore
+export const db = getFirestore(app);
+
+// Firebase Realtime Database
+export const rtdb = getDatabase(app);
+
+// Main Firebase App
+export { app };
