@@ -117,8 +117,14 @@ export default function App() {
           );
         }
       } catch (error) {
-        console.error("Profile error:", error);
-        setNotice("Account details load nahi ho paye.");
+  console.error("Profile error:", error);
+
+  setNotice(
+    "Firebase Error: " +
+    (error.code || "unknown") +
+    " - " +
+    (error.message || "Account details load nahi ho paye.")
+  );
       }
 
       setAuthLoading(false);
