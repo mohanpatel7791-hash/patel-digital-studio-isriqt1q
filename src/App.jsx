@@ -1244,9 +1244,11 @@ export default function App() {
                     {service.category}
                   </p>
 
-                  <div className="pds-price">
-                    {money(service.price)}
-                  </div>
+                  {user && !isAdmin && (
+  <div className="pds-price">
+    {money(service.price)}
+  </div>
+)}
 
                   <button
                     onClick={() => createOrder(service)}
